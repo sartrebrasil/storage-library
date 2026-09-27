@@ -1,0 +1,142 @@
+package com.example.storage.spring;
+
+import com.example.storage.ObjectStorage;
+import com.example.storage.azure.AzureBlobObjectStorage;
+import com.example.storage.gcs.GcsObjectStorage;
+import com.example.storage.memory.InMemoryObjectStorage;
+import com.example.storage.oci.OciObjectStorage;
+import com.example.storage.s3.S3ObjectStorage;
+import com.google.cloud.NoCredentials;
+import com.google.cloud.storage.HttpStorageOptions;
+import com.oracle.bmc.objectstorage.responses.GetNamespaceResponse;
+import org.junit.jupiter.api.Test;
+import org.springframework.boot.autoconfigure.AutoConfigurations;
+import org.springframework.boot.test.context.FilteredClassLoader;
+import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import software.amazon.awssdk.services.s3.S3Client;
+import software.amazon.awssdk.services.s3.presigner.S3Presigner;
+
+import java.net.URI;
+import java.time.Duration;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.*;
+
+/** Nenhum cenário acessa a rede: os clientes são só construídos. */
+class StorageAutoConfigurationTest {
+
+    private final ApplicationContextRunner runner = new ApplicationContextRunner()
+            .withConfiguration(AutoConfigurations.of(StorageAutoConfiguration.class));
+
+    private static final String[] MINIO = {
+            "storage.provider=s3", "storage.bucket=reports",
+            "storage.s3.region=us-east-1", "storage.s3.endpoint=http://localhost:9000", "storage.s3.path-style=true",
+            "storage.s3.access-key=minioadmin", "storage.s3.secret-key=minioadmin"};
+
+    @Test
+    void semProviderNaoCriaStorage() {
+        runner.run(context -> assertThat(context).doesNotHaveBean(ObjectStorage.class));
+    }
+
+    @Test
+    void s3CriaClienteEPresignerComAMesmaConfiguracao() {
+        runner.withPropertyValues(MINIO).run(context -> {
+            assertThat(context).hasSingleBean(S3Client.class).hasSingleBean(S3Presigner.class);
+            ObjectStorage storage = context.getBean(ObjectStorage.class);
+            assertThat(storage).isInstanceOf(S3ObjectStorage.class);
+            // Endpoint e path-style chegaram ao presigner (assinatura local, sem rede)
+            URI url = storage.presignGet("r.csv", Duration.ofMinutes(5));
+            assertThat(url.toString()).startsWith("http://localhost:9000/reports/r.csv?");
+        });
+    }
+
+    @Test
+    void providerSemBucketFalhaNaInicializacao() {
+        runner.withPropertyValues("storage.provider=s3", "storage.s3.region=us-east-1").run(context ->
+                assertThat(context).hasFailed().getFailure().hasRootCauseMessage(
+                        "storage.bucket é obrigatório quando storage.provider está definido"));
+    }
+
+    @Test
+    void providerAceitaMaiusculas() {
+        runner.withPropertyValues(MINIO).withPropertyValues("storage.provider=S3")
+                .run(context -> assertThat(context).hasSingleBean(S3ObjectStorage.class));
+    }
+
+    @Test
+    void semAdapterNoClasspathNaoCriaStorage() {
+        runner.withPropertyValues(MINIO).withClassLoader(new FilteredClassLoader(S3ObjectStorage.class))
+                .run(context -> assertThat(context).doesNotHaveBean(ObjectStorage.class));
+    }
+
+    @Test
+    void storageDaAplicacaoDesligaAAutoConfiguracao() {
+        runner.withPropertyValues(MINIO).withBean(ObjectStorage.class, InMemoryObjectStorage::new).run(context -> {
+            assertThat(context).hasSingleBean(ObjectStorage.class);
+            assertThat(context.getBean(ObjectStorage.class)).isInstanceOf(InMemoryObjectStorage.class);
+        });
+    }
+
+    @Test
+    void azureComConnectionStringUsaSasPorChaveDaConta() {
+        runner.withPropertyValues("storage.provider=azure", "storage.bucket=reports",
+                "storage.azure.connection-string=UseDevelopmentStorage=true").run(context -> {
+            ObjectStorage storage = context.getBean(ObjectStorage.class);
+            assertThat(storage).isInstanceOf(AzureBlobObjectStorage.class);
+            // SAS por chave da conta é gerado localmente; user delegation exigiria rede.
+            URI url = storage.presignGet("r.csv", Duration.ofMinutes(5));
+            assertThat(url.toString()).startsWith("http://127.0.0.1:10000/devstoreaccount1/reports/r.csv?")
+                    .contains("sig=");
+        });
+    }
+
+    @Test
+    void azureComEndpointUsaDefaultAzureCredential() {
+        runner.withPropertyValues("storage.provider=azure", "storage.bucket=reports",
+                        "storage.azure.endpoint=https://conta.blob.core.windows.net")
+                .run(context -> assertThat(context).hasSingleBean(AzureBlobObjectStorage.class));
+    }
+
+    @Test
+    void azureSemCredencialFalhaComMensagemClara() {
+        runner.withPropertyValues("storage.provider=azure", "storage.bucket=reports").run(context ->
+                assertThat(context).hasFailed().getFailure()
+                        .hasRootCauseMessage("Defina storage.azure.connection-string ou storage.azure.endpoint"));
+    }
+
+    @Test
+    void gcsReaproveitaOpcoesDaAplicacao() {
+        HttpStorageOptions options = HttpStorageOptions.newBuilder()
+                .setProjectId("projeto").setCredentials(NoCredentials.getInstance()).build();
+
+        runner.withPropertyValues("storage.provider=gcs", "storage.bucket=reports")
+                .withBean(HttpStorageOptions.class, () -> options)
+                .run(context -> assertThat(context).hasSingleBean(GcsObjectStorage.class));
+    }
+
+    @Test
+    void ociConsultaNamespaceQuandoNaoConfigurado() {
+        var client = mock(com.oracle.bmc.objectstorage.ObjectStorage.class);
+        when(client.getNamespace(any())).thenReturn(GetNamespaceResponse.builder().value("ns").build());
+
+        runner.withPropertyValues("storage.provider=oci", "storage.bucket=reports")
+                .withBean(com.oracle.bmc.objectstorage.ObjectStorage.class, () -> client)
+                .run(context -> {
+                    assertThat(context).hasSingleBean(OciObjectStorage.class);
+                    verify(client).getNamespace(any());
+                });
+    }
+
+    @Test
+    void ociUsaNamespaceDaConfiguracao() {
+        var client = mock(com.oracle.bmc.objectstorage.ObjectStorage.class);
+
+        runner.withPropertyValues("storage.provider=oci", "storage.bucket=reports", "storage.oci.namespace=ns")
+                .withBean(com.oracle.bmc.objectstorage.ObjectStorage.class, () -> client)
+                .run(context -> {
+                    assertThat(context).hasSingleBean(OciObjectStorage.class);
+                    verify(client, never()).getNamespace(any());
+                });
+    }
+}
