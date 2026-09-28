@@ -61,3 +61,7 @@ Exceções: `StorageException` > `ObjectNotFoundException`,
 | F3 | GCS e OCI completos | Mocks verdes; contrato manual em bucket real | Mocks verdes; contrato em bucket real pendente |
 | F4 | Starter Spring Boot 3.5.x | Teste de auto-configuração por provedor | Concluída |
 | F5 | `mvn install` da 0.1.0 e migração do report-streaming | Exemplo roda contra MinIO e Azurite | Migrado; exemplo verificado contra MinIO |
+
+Planos em andamento ficam em [`docs/plans/active/`](plans/active/):
+
+- [Absorver as abstrações exigidas pelo oobj-ms-dfe-relatorios](plans/active/2026-09-28-absorver-abstracoes-dfe-relatorios.md)
