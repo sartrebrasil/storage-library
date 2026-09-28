@@ -43,6 +43,11 @@ final class OciMultipartSession implements MultipartSession {
     }
 
     @Override
+    public String uploadId() {
+        return uploadId;
+    }
+
+    @Override
     public UploadedPart uploadPart(int partNumber, byte[] data, int length) {
         String md5 = md5Base64(data, length);
         UploadPartRequest request = UploadPartRequest.builder()

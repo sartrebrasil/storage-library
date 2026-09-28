@@ -21,12 +21,23 @@ import java.util.concurrent.atomic.AtomicReference;
  * parte é despachada em background e a escrita continua em outro buffer.
  * O número de buffers é limitado ({@code maxInFlight + 1}), então se o
  * storage ficar lento a thread que lê o banco bloqueia (backpressure) em
- * vez de acumular o relatório inteiro em memória.</p>
+ * vez de acumular o relatório inteiro em memória. Com {@code maxInFlight = 0}
+ * ({@link MultipartConfig#sequential}), cada parte sobe na própria thread que
+ * escreve, reaproveitando um único buffer.</p>
  *
  * <p><b>Contrato de finalização:</b> o objeto só é gravado com
  * {@link #commit()}. Um {@link #close()} sem commit ABORTA o upload. Assim,
  * um erro no meio da leitura do banco dentro de um try-with-resources nunca
- * publica um relatório truncado.</p>
+ * publica um relatório truncado. Para entregar o stream a quem o fecha por
+ * conta própria ({@code GZIPOutputStream}, {@code ObjectMapper.writeValue}),
+ * use {@link #nonClosing()}.</p>
+ *
+ * <p>Com {@link MultipartConfig#maxObjectBytes()}, a escrita que passaria do
+ * limite aborta o upload e lança {@link ObjectTooLargeException}.</p>
+ *
+ * <p>Falhas do storage chegam como {@link StorageException} (runtime), com o tipo
+ * original, em {@code write} ou em {@link #commit()}; {@link IOException} fica para
+ * interrupção, stream já finalizado e limite de partes.</p>
  *
  * <p>Não é thread-safe para escrita: um único produtor por stream.</p>
  */
@@ -41,6 +52,8 @@ public final class MultipartOutputStream extends OutputStream {
     private final MultipartSession session;
     private final int partSize;
     private final Executor executor;
+    private final boolean sequential;
+    private final long maxObjectBytes;
     private final int maxBuffers;
     private final BlockingQueue<byte[]> freeBuffers;
     private final List<CompletableFuture<UploadedPart>> pending = new ArrayList<>();
@@ -62,6 +75,8 @@ public final class MultipartOutputStream extends OutputStream {
         this.session = Objects.requireNonNull(session, "session");
         this.partSize = config.partSize();
         this.executor = config.executor();
+        this.sequential = config.isSequential();
+        this.maxObjectBytes = config.maxObjectBytes();
         this.maxBuffers = config.maxInFlight() + 1;
         this.freeBuffers = new ArrayBlockingQueue<>(maxBuffers);
         this.buffer = new byte[partSize];   // demais buffers são alocados sob demanda
@@ -71,6 +86,7 @@ public final class MultipartOutputStream extends OutputStream {
     @Override
     public void write(int b) throws IOException {
         ensureOpen();
+        ensureWithinLimit(1);
         buffer[position++] = (byte) b;
         bytesWritten++;
         if (position == partSize) {
@@ -82,6 +98,7 @@ public final class MultipartOutputStream extends OutputStream {
     public void write(byte[] b, int off, int len) throws IOException {
         Objects.checkFromIndexSize(off, len, b.length);
         ensureOpen();
+        ensureWithinLimit(len);
         while (len > 0) {
             int n = Math.min(len, partSize - position);
             System.arraycopy(b, off, buffer, position, n);
@@ -103,7 +120,12 @@ public final class MultipartOutputStream extends OutputStream {
     public void flush() {
     }
 
-    /** Envia o restante, espera todas as partes e conclui o upload. */
+    /**
+     * Envia o restante, espera todas as partes e conclui o upload. Qualquer falha aborta.
+     *
+     * @throws StorageException falha do storage, com o tipo original ({@link AccessDeniedException}...)
+     * @throws IOException      interrupção, stream já finalizado ou limite de partes
+     */
     public void commit() throws IOException {
         ensureOpen();
         try {
@@ -117,8 +139,7 @@ public final class MultipartOutputStream extends OutputStream {
             state = State.COMMITTED;
         } catch (IOException | RuntimeException e) {
             abortQuietly(e);
-            throw e instanceof IOException io ? io
-                    : new IOException("Falha ao concluir upload de " + session.key(), e);
+            throw e;   // StorageException continua StorageException: quem classifica por tipo depende disso
         }
     }
 
@@ -143,6 +164,42 @@ public final class MultipartOutputStream extends OutputStream {
         return nextPartNumber - 1;
     }
 
+    public String uploadId() {
+        return session.uploadId();
+    }
+
+    /**
+     * Visão deste stream cujo {@code close()} não faz nada, para entregar a quem fecha o
+     * stream recebido ({@code GZIPOutputStream.close()}, {@code ObjectMapper.writeValue}).
+     * O upload continua dependendo de {@link #commit()} neste objeto:
+     *
+     * <pre>{@code
+     * try (MultipartOutputStream out = MultipartOutputStream.open(storage, key, metadata, config)) {
+     *     try (GZIPOutputStream gzip = new GZIPOutputStream(out.nonClosing())) {
+     *         writeReport(gzip);
+     *     }
+     *     out.commit();
+     * }
+     * }</pre>
+     */
+    public OutputStream nonClosing() {
+        return new OutputStream() {
+            @Override
+            public void write(int b) throws IOException {
+                MultipartOutputStream.this.write(b);
+            }
+
+            @Override
+            public void write(byte[] b, int off, int len) throws IOException {
+                MultipartOutputStream.this.write(b, off, len);
+            }
+
+            @Override
+            public void close() {
+            }
+        };
+    }
+
     // ------------------------------------------------------------------
 
     private void dispatchFullBuffer() throws IOException {
@@ -156,12 +213,13 @@ public final class MultipartOutputStream extends OutputStream {
         int partNumber = nextPartNumber;
         if (partNumber > MAX_PARTS) {
             throw new IOException("Limite de " + MAX_PARTS + " partes excedido em "
-                    + session.key() + "; aumente o partSize");
+                    + describe() + "; aumente o partSize");
         }
         nextPartNumber++;
 
-        CompletableFuture<UploadedPart> future =
-                CompletableFuture.supplyAsync(() -> session.uploadPart(partNumber, data, length), executor);
+        CompletableFuture<UploadedPart> future = sequential
+                ? uploadNow(partNumber, data, length)
+                : CompletableFuture.supplyAsync(() -> session.uploadPart(partNumber, data, length), executor);
         future.whenComplete((part, error) -> {
             if (error != null) {
                 failure.compareAndSet(null, unwrap(error));
@@ -169,6 +227,30 @@ public final class MultipartOutputStream extends OutputStream {
             freeBuffers.offer(data);   // devolve o buffer ao pool, com sucesso ou falha
         });
         pending.add(future);
+        if (sequential) {
+            rethrowIfFailed();   // a parte já terminou: a falha aparece nesta mesma escrita
+        }
+    }
+
+    private CompletableFuture<UploadedPart> uploadNow(int partNumber, byte[] data, int length) {
+        try {
+            return CompletableFuture.completedFuture(session.uploadPart(partNumber, data, length));
+        } catch (RuntimeException e) {
+            return CompletableFuture.failedFuture(e);
+        }
+    }
+
+    private void ensureWithinLimit(int len) {
+        if (maxObjectBytes != MultipartConfig.UNLIMITED && bytesWritten + len > maxObjectBytes) {
+            ObjectTooLargeException tooLarge = new ObjectTooLargeException(
+                    describe() + " passaria de " + maxObjectBytes + " bytes", maxObjectBytes);
+            abortQuietly(tooLarge);
+            throw tooLarge;
+        }
+    }
+
+    private String describe() {
+        return session.key() + " (uploadId " + session.uploadId() + ")";
     }
 
     private byte[] acquireBuffer() throws IOException {
@@ -194,7 +276,10 @@ public final class MultipartOutputStream extends OutputStream {
             try {
                 parts.add(future.get());
             } catch (ExecutionException e) {
-                throw new IOException("Falha no upload de parte de " + session.key(), e.getCause());
+                if (e.getCause() instanceof StorageException storage) {
+                    throw storage;
+                }
+                throw new IOException("Falha no upload de parte de " + describe(), e.getCause());
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 throw new InterruptedIOException("Interrompido aguardando partes");
@@ -222,7 +307,7 @@ public final class MultipartOutputStream extends OutputStream {
                 cause.addSuppressed(e);
             } else {
                 LOG.log(System.Logger.Level.WARNING,
-                        "Falha ao abortar upload de " + session.key()
+                        "Falha ao abortar upload de " + describe()
                                 + "; a lifecycle rule do bucket deve limpar", e);
             }
         }
@@ -230,14 +315,17 @@ public final class MultipartOutputStream extends OutputStream {
 
     private void ensureOpen() throws IOException {
         if (state != State.OPEN) {
-            throw new IOException("Stream de " + session.key() + " já finalizado (" + state + ")");
+            throw new IOException("Stream de " + describe() + " já finalizado (" + state + ")");
         }
     }
 
     private void rethrowIfFailed() throws IOException {
         Throwable t = failure.get();
+        if (t instanceof StorageException storage) {
+            throw storage;   // sobe com o stack trace da thread da parte; a mensagem traz a chave
+        }
         if (t != null) {
-            throw new IOException("Upload de parte falhou para " + session.key(), t);
+            throw new IOException("Upload de parte falhou para " + describe(), t);
         }
     }
 

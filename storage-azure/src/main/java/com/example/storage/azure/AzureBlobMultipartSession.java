@@ -40,6 +40,11 @@ final class AzureBlobMultipartSession implements MultipartSession {
     }
 
     @Override
+    public String uploadId() {
+        return uploadId;
+    }
+
+    @Override
     public UploadedPart uploadPart(int partNumber, byte[] data, int length) {
         // O Azure rejeita bloco vazio. Parte vazia só acontece no relatório
         // sem nenhum byte; o commit com lista vazia cria o blob de 0 bytes.
