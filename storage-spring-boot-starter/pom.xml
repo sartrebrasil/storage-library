@@ -56,6 +56,32 @@
       <version>${project.version}</version>
       <optional>true</optional>
     </dependency>
+    <!-- Health indicator: ativo só quando a aplicação tem o Actuator. Sem transitivas: o
+         Jackson delas rebaixaria o dos SDKs, e a aplicação traz o próprio Actuator. -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-actuator-autoconfigure</artifactId>
+      <version>${spring-boot.version}</version>
+      <optional>true</optional>
+      <exclusions>
+        <exclusion>
+          <groupId>*</groupId>
+          <artifactId>*</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-actuator</artifactId>
+      <version>${spring-boot.version}</version>
+      <optional>true</optional>
+      <exclusions>
+        <exclusion>
+          <groupId>*</groupId>
+          <artifactId>*</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
     <!-- Azure sem connection string: DefaultAzureCredential -->
     <dependency>
       <groupId>com.azure</groupId>
