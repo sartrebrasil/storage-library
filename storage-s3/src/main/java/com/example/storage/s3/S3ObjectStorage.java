@@ -8,6 +8,7 @@ import com.example.storage.Condition;
 import com.example.storage.DeleteResult;
 import com.example.storage.MultipartSession;
 import com.example.storage.ObjectInfo;
+import com.example.storage.ObjectContent;
 import com.example.storage.ObjectMetadata;
 import com.example.storage.ObjectStorage;
 import com.example.storage.ObjectSummary;
@@ -15,6 +16,7 @@ import com.example.storage.PreconditionFailedException;
 import com.example.storage.PresignedRequest;
 import com.example.storage.PutOptions;
 import com.example.storage.StorageException;
+import software.amazon.awssdk.core.ResponseInputStream;
 import software.amazon.awssdk.core.exception.SdkException;
 import software.amazon.awssdk.core.sync.RequestBody;
 import software.amazon.awssdk.services.s3.S3Client;
@@ -24,6 +26,7 @@ import software.amazon.awssdk.services.s3.model.CreateMultipartUploadRequest;
 import software.amazon.awssdk.services.s3.model.CreateMultipartUploadResponse;
 import software.amazon.awssdk.services.s3.model.DeleteObjectsResponse;
 import software.amazon.awssdk.services.s3.model.GetObjectRequest;
+import software.amazon.awssdk.services.s3.model.GetObjectResponse;
 import software.amazon.awssdk.services.s3.model.HeadObjectResponse;
 import software.amazon.awssdk.services.s3.model.ObjectIdentifier;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
@@ -65,27 +68,56 @@ public final class S3ObjectStorage implements ObjectStorage {
     private static final long COPY_PART_SIZE = 512L * 1024 * 1024;
     private static final int DELETE_BATCH = 1_000;
 
+    /**
+     * Checksum de integridade que o adapter pede em {@code put} e no multipart.
+     *
+     * <p>{@code NONE} só deixa de pedir: desde o SDK 2.30 o cliente calcula CRC32 por conta
+     * própria. Para desligar de fato, construa o {@link S3Client} com
+     * {@code requestChecksumCalculation(WHEN_REQUIRED)} e
+     * {@code responseChecksumValidation(WHEN_REQUIRED)}, como o starter faz.</p>
+     */
+    public enum Checksum {
+        CRC32(ChecksumAlgorithm.CRC32),
+        NONE(null);
+
+        private final ChecksumAlgorithm algorithm;
+
+        Checksum(ChecksumAlgorithm algorithm) {
+            this.algorithm = algorithm;
+        }
+    }
+
     private final S3Client s3;
     private final S3Presigner presigner;
     private final String bucket;
     private final long maxSingleCopy;
+    private final ChecksumAlgorithm checksum;
 
     public S3ObjectStorage(S3Client s3, S3Presigner presigner, String bucket) {
-        this(s3, presigner, bucket, MAX_SINGLE_COPY);
+        this(s3, presigner, bucket, Checksum.CRC32);
+    }
+
+    public S3ObjectStorage(S3Client s3, S3Presigner presigner, String bucket, Checksum checksum) {
+        this(s3, presigner, bucket, MAX_SINGLE_COPY, checksum);
     }
 
     S3ObjectStorage(S3Client s3, S3Presigner presigner, String bucket, long maxSingleCopy) {
+        this(s3, presigner, bucket, maxSingleCopy, Checksum.CRC32);
+    }
+
+    private S3ObjectStorage(S3Client s3, S3Presigner presigner, String bucket, long maxSingleCopy, Checksum checksum) {
         this.s3 = Objects.requireNonNull(s3, "s3");
         this.presigner = Objects.requireNonNull(presigner, "presigner");
         this.bucket = Objects.requireNonNull(bucket, "bucket");
         this.maxSingleCopy = maxSingleCopy;
+        this.checksum = Objects.requireNonNull(checksum, "checksum").algorithm;
     }
 
     @Override
     public String put(String key, InputStream data, long length, PutOptions options) {
         try {
             return s3.putObject(putRequest(key, options).contentLength(length)
-                            .checksumAlgorithm(ChecksumAlgorithm.CRC32).build(),
+                            .checksumAlgorithm(checksum).build(),
                     RequestBody.fromInputStream(data, length)).eTag();
         } catch (SdkException e) {
             if (options.condition() instanceof Condition.IfVersionMatches && status(e) == 404) {
@@ -103,13 +135,13 @@ public final class S3ObjectStorage implements ObjectStorage {
                 .contentType(metadata.contentType())
                 .contentDisposition(metadata.contentDisposition())
                 .metadata(metadata.userMetadata())
-                // Integridade por parte. Remova se o backend compatível não suportar.
-                .checksumAlgorithm(ChecksumAlgorithm.CRC32);
+                // Integridade por parte; Checksum.NONE para backends compatíveis que não suportam.
+                .checksumAlgorithm(checksum);
         // .serverSideEncryption(ServerSideEncryption.AWS_KMS).ssekmsKeyId(...) se aplicável
 
         try {
             CreateMultipartUploadResponse response = s3.createMultipartUpload(request.build());
-            return new S3MultipartSession(s3, bucket, key, response.uploadId());
+            return new S3MultipartSession(s3, bucket, key, response.uploadId(), checksum);
         } catch (SdkException e) {
             throw translate(e, "Falha ao iniciar upload multipart de " + uri(key));
         }
@@ -131,14 +163,40 @@ public final class S3ObjectStorage implements ObjectStorage {
 
     @Override
     public InputStream open(String key, ByteRange range) {
+        return read(key, range).stream();
+    }
+
+    /** Uma chamada só: tamanho e faixa vêm de {@code Content-Length} e {@code Content-Range}. */
+    @Override
+    public ObjectContent read(String key, ByteRange range) {
         GetObjectRequest.Builder request = GetObjectRequest.builder().bucket(bucket).key(key);
         if (!range.isAll()) {
-            request.range("bytes=" + range.offset() + "-" + (range.toEnd() ? "" : range.lastByte()));
+            request.range(range.httpValue());
         }
         try {
-            return s3.getObject(request.build());
+            ResponseInputStream<GetObjectResponse> in = s3.getObject(request.build());
+            GetObjectResponse response = in.response();
+            if (!range.isAll() && response.contentRange() == null) {
+                // Backend compatível que ignorou o Range: devolver o objeto inteiro seria servir bytes errados
+                in.abort();
+                range.resolve(response.contentLength());   // lança 416 se a faixa não existir
+                throw new StorageException("Resposta sem Content-Range para " + range.httpValue()
+                        + " em " + uri(key), null);
+            }
+            return ObjectContent.fromHttp(in, response.contentLength(), response.contentRange());
         } catch (SdkException e) {
             throw translate(e, "Falha ao ler " + uri(key));
+        }
+    }
+
+    @Override
+    public void checkAccess() {
+        try {
+            s3.headBucket(b -> b.bucket(bucket));
+        } catch (SdkException e) {
+            // HEAD não tem corpo: o 404 de bucket inexistente chega sem o código NoSuchBucket
+            throw status(e) == 404 ? new StorageException("Bucket não existe: s3://" + bucket, e)
+                    : translate(e, "Falha ao acessar s3://" + bucket);
         }
     }
 

@@ -2,6 +2,7 @@ package com.example.storage.s3;
 
 import com.example.storage.MultipartSession;
 import com.example.storage.ObjectMetadata;
+import com.example.storage.PutOptions;
 import com.example.storage.StorageException;
 import com.example.storage.UploadedPart;
 import org.junit.jupiter.api.BeforeEach;
@@ -22,6 +23,8 @@ import software.amazon.awssdk.services.s3.model.HeadObjectResponse;
 import software.amazon.awssdk.services.s3.model.UploadPartCopyRequest;
 import software.amazon.awssdk.services.s3.model.UploadPartCopyResponse;
 import software.amazon.awssdk.services.s3.model.NoSuchUploadException;
+import software.amazon.awssdk.services.s3.model.PutObjectRequest;
+import software.amazon.awssdk.services.s3.model.PutObjectResponse;
 import software.amazon.awssdk.services.s3.model.S3Exception;
 import software.amazon.awssdk.services.s3.model.UploadPartRequest;
 import software.amazon.awssdk.services.s3.model.UploadPartResponse;
@@ -98,6 +101,30 @@ class S3ObjectStorageTest {
                 assertArrayEquals(expected, in.readAllBytes());
             }
         }
+    }
+
+    @Test
+    void checksumNoneNaoPedeChecksumEmNenhumaEscrita() {
+        S3ObjectStorage storage = new S3ObjectStorage(s3, mock(S3Presigner.class), "bucket", S3ObjectStorage.Checksum.NONE);
+        when(s3.uploadPart(any(UploadPartRequest.class), any(RequestBody.class)))
+                .thenReturn(UploadPartResponse.builder().eTag("e1").checksumCRC32("ignorado").build());
+        when(s3.putObject(any(PutObjectRequest.class), any(RequestBody.class)))
+                .thenReturn(PutObjectResponse.builder().eTag("v1").build());
+
+        MultipartSession noChecksum = storage.initiateMultipart("k", ObjectMetadata.of("text/csv"));
+        UploadedPart part = noChecksum.uploadPart(1, new byte[3], 3);
+        storage.put("p", new byte[3], PutOptions.of("text/plain"));
+
+        ArgumentCaptor<CreateMultipartUploadRequest> create = ArgumentCaptor.forClass(CreateMultipartUploadRequest.class);
+        verify(s3, times(2)).createMultipartUpload(create.capture());
+        assertNull(create.getAllValues().get(1).checksumAlgorithm());
+        ArgumentCaptor<UploadPartRequest> upload = ArgumentCaptor.forClass(UploadPartRequest.class);
+        verify(s3).uploadPart(upload.capture(), any(RequestBody.class));
+        assertNull(upload.getValue().checksumAlgorithm());
+        assertNull(part.checksum(), "sem checksum pedido, a conclusão não pode enviar um");
+        ArgumentCaptor<PutObjectRequest> put = ArgumentCaptor.forClass(PutObjectRequest.class);
+        verify(s3).putObject(put.capture(), any(RequestBody.class));
+        assertNull(put.getValue().checksumAlgorithm());
     }
 
     @Test

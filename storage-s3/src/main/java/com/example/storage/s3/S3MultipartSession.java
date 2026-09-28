@@ -22,17 +22,24 @@ final class S3MultipartSession implements MultipartSession {
     private final String bucket;
     private final String key;
     private final String uploadId;
+    private final ChecksumAlgorithm checksum;   // null: sem checksum pedido
 
-    S3MultipartSession(S3Client s3, String bucket, String key, String uploadId) {
+    S3MultipartSession(S3Client s3, String bucket, String key, String uploadId, ChecksumAlgorithm checksum) {
         this.s3 = s3;
         this.bucket = bucket;
         this.key = key;
         this.uploadId = uploadId;
+        this.checksum = checksum;
     }
 
     @Override
     public String key() {
         return key;
+    }
+
+    @Override
+    public String uploadId() {
+        return uploadId;
     }
 
     @Override
@@ -43,7 +50,7 @@ final class S3MultipartSession implements MultipartSession {
                 .uploadId(uploadId)
                 .partNumber(partNumber)
                 .contentLength((long) length)
-                .checksumAlgorithm(ChecksumAlgorithm.CRC32)
+                .checksumAlgorithm(checksum)
                 .build();
 
         // fromContentProvider evita copiar o buffer e cria um stream novo a
@@ -53,7 +60,7 @@ final class S3MultipartSession implements MultipartSession {
 
         try {
             UploadPartResponse response = s3.uploadPart(request, body);
-            return new UploadedPart(partNumber, response.eTag(), response.checksumCRC32());
+            return new UploadedPart(partNumber, response.eTag(), checksum == null ? null : response.checksumCRC32());
         } catch (SdkException e) {
             throw new StorageException("Falha ao enviar parte " + partNumber + " de " + key, e);
         }
