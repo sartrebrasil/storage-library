@@ -232,6 +232,12 @@ declarado pela aplicação. Com vários `ObjectStorage` (um por bucket), o indic
 composto, um por bean, na chave do nome do bean (`/actuator/health/storage/reportsStorage`);
 qualquer bucket `DOWN` deixa `storage` `DOWN`. Desligue com `management.health.storage.enabled=false`.
 
+Com um `MeterRegistry` no contexto (Actuator + registro de métricas, ex.: Prometheus), o starter
+decora todo `ObjectStorage` e mede cada operação em `storage.operations` (tags `operation` —
+`put`, `head`, `open`, `list`, `delete`, `copy`, `checkAccess`...—, `storage` com o nome do bean,
+e `outcome`, `success` ou `error`). Sem `MeterRegistry` no classpath ou no contexto, não decora
+nada.
+
 No S3, o cliente e o presigner usam o mesmo bean `AwsCredentialsProvider`: credencial
 estática com `access-key`, senão a cadeia padrão da AWS. Na cadeia padrão, credenciais
 temporárias (IRSA, STS, metadata da instância) são renovadas numa thread de fundo antes de
