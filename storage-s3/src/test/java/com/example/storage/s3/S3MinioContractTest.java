@@ -58,4 +58,9 @@ class S3MinioContractTest extends ObjectStorageContract {
     protected ObjectStorage storage() {
         return storage;
     }
+
+    @Override
+    protected ObjectStorage storageWithMissingBucket() {
+        return new S3ObjectStorage(s3, presigner, "nao-existe");
+    }
 }

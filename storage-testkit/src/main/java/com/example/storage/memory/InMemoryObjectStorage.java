@@ -83,11 +83,9 @@ public final class InMemoryObjectStorage implements ObjectStorage {
     @Override
     public InputStream open(String key, ByteRange range) {
         byte[] data = require(key).data();
-        if (range.offset() > data.length) {
-            throw new StorageException("Faixa fora do objeto " + key, null);
-        }
-        int end = range.toEnd() ? data.length : (int) Math.min(data.length, range.offset() + range.length());
-        return new ByteArrayInputStream(Arrays.copyOfRange(data, (int) range.offset(), end));
+        ByteRange resolved = range.resolve(data.length);
+        return resolved.isAll() ? new ByteArrayInputStream(data)
+                : new ByteArrayInputStream(data, (int) resolved.offset(), (int) resolved.length());
     }
 
     @Override
@@ -175,6 +173,11 @@ public final class InMemoryObjectStorage implements ObjectStorage {
         @Override
         public String key() {
             return key;
+        }
+
+        @Override
+        public String uploadId() {
+            return uploadId;
         }
 
         @Override

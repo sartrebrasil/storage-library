@@ -26,6 +26,7 @@ class AzuriteContractTest extends ObjectStorageContract {
                     .waitingFor(Wait.forListeningPort());
 
     private static AzureBlobObjectStorage storage;
+    private static AzureBlobObjectStorage missing;
 
     @BeforeAll
     static void setUp() {
@@ -35,11 +36,18 @@ class AzuriteContractTest extends ObjectStorageContract {
         BlobContainerClient container = new BlobServiceClientBuilder().connectionString(connectionString)
                 .buildClient().createBlobContainer("contract");
         storage = AzureBlobObjectStorage.withSharedKey(container);
+        missing = AzureBlobObjectStorage.withSharedKey(new BlobServiceClientBuilder()
+                .connectionString(connectionString).buildClient().getBlobContainerClient("nao-existe"));
     }
 
     @Override
     protected ObjectStorage storage() {
         return storage;
+    }
+
+    @Override
+    protected ObjectStorage storageWithMissingBucket() {
+        return missing;
     }
 
     /** A página do Azure tem 5000 itens: 1010 objetos não exercitam paginação e só deixam o teste lento. */
