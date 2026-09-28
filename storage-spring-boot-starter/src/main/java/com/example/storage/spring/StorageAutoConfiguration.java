@@ -2,6 +2,7 @@ package com.example.storage.spring;
 
 import com.azure.identity.DefaultAzureCredentialBuilder;
 import com.azure.storage.blob.BlobContainerClient;
+import com.azure.storage.blob.BlobServiceClient;
 import com.azure.storage.blob.BlobServiceClientBuilder;
 import com.example.storage.ObjectStorage;
 import com.example.storage.azure.AzureBlobObjectStorage;
@@ -15,15 +16,37 @@ import com.google.cloud.storage.Storage;
 import com.oracle.bmc.auth.ConfigFileAuthenticationDetailsProvider;
 import com.oracle.bmc.objectstorage.ObjectStorageClient;
 import com.oracle.bmc.objectstorage.requests.GetNamespaceRequest;
+import org.springframework.beans.factory.BeanFactory;
+import org.springframework.beans.factory.BeanFactoryAware;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.support.AutowireCandidateQualifier;
+import org.springframework.beans.factory.support.BeanDefinitionRegistry;
+import org.springframework.beans.factory.support.RootBeanDefinition;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
+import org.springframework.boot.autoconfigure.condition.ConditionOutcome;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.boot.autoconfigure.condition.SpringBootCondition;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.boot.context.properties.bind.Bindable;
+import org.springframework.boot.context.properties.bind.Binder;
+import org.springframework.context.EnvironmentAware;
 import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Conditional;
+import org.springframework.context.annotation.ConditionContext;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Import;
+import org.springframework.context.annotation.ImportBeanDefinitionRegistrar;
+import org.springframework.core.env.Environment;
+import org.springframework.core.type.AnnotatedTypeMetadata;
+import org.springframework.core.type.AnnotationMetadata;
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
+import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
+import software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider;
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
+import software.amazon.awssdk.core.checksums.RequestChecksumCalculation;
+import software.amazon.awssdk.core.checksums.ResponseChecksumValidation;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.S3ClientBuilder;
@@ -31,6 +54,7 @@ import software.amazon.awssdk.services.s3.S3Configuration;
 import software.amazon.awssdk.services.s3.presigner.S3Presigner;
 
 import java.io.IOException;
+import java.util.Map;
 
 /**
  * Cria o {@link ObjectStorage} do provedor em {@code storage.provider}. Cada provedor só é
@@ -40,12 +64,17 @@ import java.io.IOException;
  * {@code HttpStorageOptions}, cliente OCI...) são reaproveitados; um {@code ObjectStorage}
  * próprio desliga esta auto-configuração.</p>
  *
+ * <p>Vários buckets: {@code storage.buckets.<nome>=<bucket>} cria um {@code ObjectStorage} por
+ * entrada ({@code <nome>ObjectStorage}, qualifier {@code <nome>}), todos com os mesmos clientes,
+ * no lugar do bean único de {@code storage.bucket}.</p>
+ *
  * <p>Os beans têm nome por provedor ({@code s3ObjectStorage}, {@code ociObjectStorage}...):
  * o nome padrão {@code objectStorage} colidiria com o cliente da OCI, cuja interface também
  * se chama {@code ObjectStorage}.</p>
  */
 @AutoConfiguration
 @EnableConfigurationProperties(StorageProperties.class)
+@Import(StorageAutoConfiguration.BucketsRegistrar.class)
 public class StorageAutoConfiguration {
 
     private static final String PREFIX = "storage";
@@ -62,19 +91,36 @@ public class StorageAutoConfiguration {
     @ConditionalOnProperty(prefix = PREFIX, name = "provider", havingValue = "s3")
     static class S3StorageConfiguration {
 
+        /**
+         * Um provider só, compartilhado pelo cliente e pelo presigner: credencial estática com
+         * {@code access-key}, senão a cadeia padrão da AWS (variáveis, IRSA, perfil, metadata),
+         * com renovação em fundo das credenciais temporárias ({@code async-credential-update}).
+         */
         @Bean
         @ConditionalOnMissingBean
-        S3Client s3Client(StorageProperties properties) {
+        AwsCredentialsProvider s3CredentialsProvider(StorageProperties properties) {
             StorageProperties.S3 s3 = properties.s3();
-            S3ClientBuilder builder = S3Client.builder().forcePathStyle(s3.pathStyle());
+            return s3.accessKey() != null
+                    ? StaticCredentialsProvider.create(AwsBasicCredentials.create(s3.accessKey(), s3.secretKey()))
+                    : DefaultCredentialsProvider.builder().asyncCredentialUpdateEnabled(s3.asyncCredentialUpdate()).build();
+        }
+
+        @Bean
+        @ConditionalOnMissingBean
+        S3Client s3Client(StorageProperties properties, AwsCredentialsProvider s3CredentialsProvider) {
+            StorageProperties.S3 s3 = properties.s3();
+            S3ClientBuilder builder = S3Client.builder().forcePathStyle(s3.pathStyle())
+                    .credentialsProvider(s3CredentialsProvider);
+            if (s3.checksum() == StorageProperties.S3.Checksum.NONE) {
+                // Sem isso o SDK (>= 2.30) calcula CRC32 sozinho, mesmo sem o adapter pedir
+                builder.requestChecksumCalculation(RequestChecksumCalculation.WHEN_REQUIRED)
+                        .responseChecksumValidation(ResponseChecksumValidation.WHEN_REQUIRED);
+            }
             if (s3.region() != null) {
                 builder.region(Region.of(s3.region()));
             }
             if (s3.endpoint() != null) {
                 builder.endpointOverride(s3.endpoint());
-            }
-            if (s3.accessKey() != null) {
-                builder.credentialsProvider(credentials(s3));
             }
             return builder.build();
         }
@@ -82,30 +128,32 @@ public class StorageAutoConfiguration {
         /** Mesma configuração do cliente: o presigner não herda endpoint nem path-style do S3Client. */
         @Bean
         @ConditionalOnMissingBean
-        S3Presigner s3Presigner(StorageProperties properties) {
+        S3Presigner s3Presigner(StorageProperties properties, AwsCredentialsProvider s3CredentialsProvider) {
             StorageProperties.S3 s3 = properties.s3();
             S3Presigner.Builder builder = S3Presigner.builder()
-                    .serviceConfiguration(S3Configuration.builder().pathStyleAccessEnabled(s3.pathStyle()).build());
+                    .serviceConfiguration(S3Configuration.builder().pathStyleAccessEnabled(s3.pathStyle()).build())
+                    .credentialsProvider(s3CredentialsProvider);
             if (s3.region() != null) {
                 builder.region(Region.of(s3.region()));
             }
             if (s3.endpoint() != null) {
                 builder.endpointOverride(s3.endpoint());
             }
-            if (s3.accessKey() != null) {
-                builder.credentialsProvider(credentials(s3));
-            }
             return builder.build();
         }
 
         @Bean
-        @ConditionalOnMissingBean(ObjectStorage.class)
-        ObjectStorage s3ObjectStorage(S3Client s3Client, S3Presigner s3Presigner, StorageProperties properties) {
-            return new S3ObjectStorage(s3Client, s3Presigner, requireBucket(properties));
+        BucketStorageFactory s3BucketStorageFactory(S3Client s3Client, S3Presigner s3Presigner,
+                                                    StorageProperties properties) {
+            S3ObjectStorage.Checksum checksum = S3ObjectStorage.Checksum.valueOf(properties.s3().checksum().name());
+            return bucket -> new S3ObjectStorage(s3Client, s3Presigner, bucket, checksum);
         }
 
-        private static StaticCredentialsProvider credentials(StorageProperties.S3 s3) {
-            return StaticCredentialsProvider.create(AwsBasicCredentials.create(s3.accessKey(), s3.secretKey()));
+        @Bean
+        @ConditionalOnMissingBean(ObjectStorage.class)
+        @Conditional(SingleBucket.class)
+        ObjectStorage s3ObjectStorage(BucketStorageFactory s3BucketStorageFactory, StorageProperties properties) {
+            return s3BucketStorageFactory.create(requireBucket(properties));
         }
     }
 
@@ -137,10 +185,15 @@ public class StorageAutoConfiguration {
         }
 
         @Bean
+        BucketStorageFactory gcsBucketStorageFactory(Storage gcsStorage, MultipartUploadClient gcsMultipartUploadClient) {
+            return bucket -> new GcsObjectStorage(gcsStorage, gcsMultipartUploadClient, bucket);
+        }
+
+        @Bean
         @ConditionalOnMissingBean(ObjectStorage.class)
-        ObjectStorage gcsObjectStorage(Storage gcsStorage, MultipartUploadClient gcsMultipartUploadClient,
-                                    StorageProperties properties) {
-            return new GcsObjectStorage(gcsStorage, gcsMultipartUploadClient, requireBucket(properties));
+        @Conditional(SingleBucket.class)
+        ObjectStorage gcsObjectStorage(BucketStorageFactory gcsBucketStorageFactory, StorageProperties properties) {
+            return gcsBucketStorageFactory.create(requireBucket(properties));
         }
     }
 
@@ -149,9 +202,10 @@ public class StorageAutoConfiguration {
     @ConditionalOnProperty(prefix = PREFIX, name = "provider", havingValue = "azure")
     static class AzureStorageConfiguration {
 
+        /** Cliente da conta, sem container: a aplicação deriva um {@code BlobContainerClient} por container. */
         @Bean
         @ConditionalOnMissingBean
-        BlobContainerClient azureBlobContainerClient(StorageProperties properties) {
+        BlobServiceClient azureBlobServiceClient(StorageProperties properties) {
             StorageProperties.Azure azure = properties.azure();
             BlobServiceClientBuilder builder = new BlobServiceClientBuilder();
             if (azure.connectionString() != null) {
@@ -162,16 +216,36 @@ public class StorageAutoConfiguration {
                 throw new IllegalStateException(
                         "Defina storage.azure.connection-string ou storage.azure.endpoint");
             }
-            return builder.buildClient().getBlobContainerClient(requireBucket(properties));
+            return builder.buildClient();
+        }
+
+        /** Não é criado com {@code ObjectStorage} da aplicação: aí {@code storage.bucket} pode faltar. */
+        @Bean
+        @ConditionalOnMissingBean({BlobContainerClient.class, ObjectStorage.class})
+        @Conditional(SingleBucket.class)
+        BlobContainerClient azureBlobContainerClient(BlobServiceClient azureBlobServiceClient,
+                                                     StorageProperties properties) {
+            return azureBlobServiceClient.getBlobContainerClient(requireBucket(properties));
+        }
+
+        @Bean
+        BucketStorageFactory azureBucketStorageFactory(BlobServiceClient azureBlobServiceClient,
+                                                       StorageProperties properties) {
+            return bucket -> azureStorage(azureBlobServiceClient.getBlobContainerClient(bucket), properties);
+        }
+
+        @Bean
+        @ConditionalOnMissingBean(ObjectStorage.class)
+        @Conditional(SingleBucket.class)
+        ObjectStorage azureObjectStorage(BlobContainerClient azureBlobContainerClient, StorageProperties properties) {
+            return azureStorage(azureBlobContainerClient, properties);
         }
 
         /** O tipo de SAS segue a autenticação: chave da conta com connection string, senão user delegation. */
-        @Bean
-        @ConditionalOnMissingBean(ObjectStorage.class)
-        ObjectStorage azureObjectStorage(BlobContainerClient azureBlobContainerClient, StorageProperties properties) {
+        private static ObjectStorage azureStorage(BlobContainerClient container, StorageProperties properties) {
             return properties.azure().connectionString() != null
-                    ? AzureBlobObjectStorage.withSharedKey(azureBlobContainerClient)
-                    : AzureBlobObjectStorage.withUserDelegation(azureBlobContainerClient);
+                    ? AzureBlobObjectStorage.withSharedKey(container)
+                    : AzureBlobObjectStorage.withUserDelegation(container);
         }
     }
 
@@ -190,13 +264,85 @@ public class StorageAutoConfiguration {
             return ObjectStorageClient.builder().build(auth);
         }
 
+        /** Namespace consultado na criação de cada storage (uma chamada por bucket, na inicialização). */
+        @Bean
+        BucketStorageFactory ociBucketStorageFactory(com.oracle.bmc.objectstorage.ObjectStorage ociObjectStorageClient,
+                                                     StorageProperties properties) {
+            return bucket -> {
+                String namespace = properties.oci().namespace() != null ? properties.oci().namespace()
+                        : ociObjectStorageClient.getNamespace(GetNamespaceRequest.builder().build()).getValue();
+                return new OciObjectStorage(ociObjectStorageClient, namespace, bucket);
+            };
+        }
+
         @Bean
         @ConditionalOnMissingBean(ObjectStorage.class)
-        ObjectStorage ociObjectStorage(com.oracle.bmc.objectstorage.ObjectStorage ociObjectStorageClient,
-                                    StorageProperties properties) {
-            String namespace = properties.oci().namespace() != null ? properties.oci().namespace()
-                    : ociObjectStorageClient.getNamespace(GetNamespaceRequest.builder().build()).getValue();
-            return new OciObjectStorage(ociObjectStorageClient, namespace, requireBucket(properties));
+        @Conditional(SingleBucket.class)
+        ObjectStorage ociObjectStorage(BucketStorageFactory ociBucketStorageFactory, StorageProperties properties) {
+            return ociBucketStorageFactory.create(requireBucket(properties));
+        }
+    }
+
+    /** Cria o {@link ObjectStorage} de um bucket com os clientes do provedor configurado. */
+    @FunctionalInterface
+    interface BucketStorageFactory {
+        ObjectStorage create(String bucket);
+    }
+
+    /** O {@code ObjectStorage} único ({@code storage.bucket}) só existe sem {@code storage.buckets}. */
+    static class SingleBucket extends SpringBootCondition {
+
+        @Override
+        public ConditionOutcome getMatchOutcome(ConditionContext context, AnnotatedTypeMetadata metadata) {
+            return buckets(context.getEnvironment()).isEmpty()
+                    ? ConditionOutcome.match("storage.buckets não definido")
+                    : ConditionOutcome.noMatch("storage.buckets definido");
+        }
+    }
+
+    static Map<String, String> buckets(Environment environment) {
+        return Binder.get(environment).bind(PREFIX + ".buckets", Bindable.mapOf(String.class, String.class))
+                .orElse(Map.of());
+    }
+
+    /**
+     * Registra um {@code ObjectStorage} por entrada de {@code storage.buckets}: bean
+     * {@code <nome>ObjectStorage} com qualifier {@code <nome>}. Os beans são registrados antes das
+     * auto-configurações seguintes, então o health check os enxerga.
+     */
+    static class BucketsRegistrar implements ImportBeanDefinitionRegistrar, EnvironmentAware, BeanFactoryAware {
+
+        private Environment environment;
+        private BeanFactory beanFactory;
+
+        @Override
+        public void setEnvironment(Environment environment) {
+            this.environment = environment;
+        }
+
+        @Override
+        public void setBeanFactory(BeanFactory beanFactory) {
+            this.beanFactory = beanFactory;
+        }
+
+        @Override
+        public void registerBeanDefinitions(AnnotationMetadata metadata, BeanDefinitionRegistry registry) {
+            buckets(environment).forEach((name, bucket) -> {
+                if (bucket == null || bucket.isBlank()) {
+                    throw new IllegalStateException("storage.buckets." + name + " está vazio");
+                }
+                RootBeanDefinition definition = new RootBeanDefinition(ObjectStorage.class, () -> factory().create(bucket));
+                definition.addQualifier(new AutowireCandidateQualifier(Qualifier.class, name));
+                registry.registerBeanDefinition(name + "ObjectStorage", definition);
+            });
+        }
+
+        private BucketStorageFactory factory() {
+            BucketStorageFactory factory = beanFactory.getBeanProvider(BucketStorageFactory.class).getIfAvailable();
+            if (factory == null) {
+                throw new IllegalStateException("storage.buckets exige storage.provider com o adapter no classpath");
+            }
+            return factory;
         }
     }
 }
