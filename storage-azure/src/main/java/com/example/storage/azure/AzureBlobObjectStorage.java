@@ -17,6 +17,7 @@ import com.azure.storage.blob.models.BlobStorageException;
 import com.azure.storage.blob.models.ListBlobsOptions;
 import com.azure.storage.blob.models.UserDelegationKey;
 import com.azure.storage.blob.options.BlobInputStreamOptions;
+import com.azure.storage.blob.specialized.BlobInputStream;
 import com.azure.storage.blob.options.BlockBlobSimpleUploadOptions;
 import com.azure.storage.blob.sas.BlobSasPermission;
 import com.azure.storage.blob.sas.BlobServiceSasSignatureValues;
@@ -26,6 +27,7 @@ import com.example.storage.ListEntry;
 import com.example.storage.StorageStreams;
 import com.example.storage.Condition;
 import com.example.storage.MultipartSession;
+import com.example.storage.ObjectContent;
 import com.example.storage.ObjectInfo;
 import com.example.storage.ObjectMetadata;
 import com.example.storage.ObjectStorage;
@@ -33,8 +35,10 @@ import com.example.storage.ObjectSummary;
 import com.example.storage.PreconditionFailedException;
 import com.example.storage.PresignedRequest;
 import com.example.storage.PutOptions;
+import com.example.storage.RangeNotSatisfiableException;
 import com.example.storage.StorageException;
 
+import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
 import java.time.Clock;
@@ -131,15 +135,57 @@ public final class AzureBlobObjectStorage implements ObjectStorage {
 
     @Override
     public InputStream open(String key, ByteRange range) {
+        return read(key, range).stream();
+    }
+
+    /**
+     * O stream do Azure lê sob demanda: a faixa é validada contra o tamanho que ele já traz,
+     * para que uma faixa fora do blob falhe aqui, não no consumo. Sufixo custa uma chamada a
+     * mais, porque {@link BlobRange} só aceita offset.
+     */
+    @Override
+    public ObjectContent read(String key, ByteRange range) {
+        BlobClient blob = blob(key);
         BlobInputStreamOptions options = new BlobInputStreamOptions();
-        if (!range.isAll()) {
-            options.setRange(new BlobRange(range.offset(), range.toEnd() ? null : range.length()));
-        }
         try {
+            if (range.isSuffix()) {
+                BlobProperties properties = blob.getProperties();
+                ByteRange resolved = range.resolve(properties.getBlobSize());
+                options.setRange(new BlobRange(resolved.offset(), resolved.length()))
+                        .setRequestConditions(new BlobRequestConditions().setIfMatch(properties.getETag()));
+            } else if (!range.isAll()) {
+                options.setRange(new BlobRange(range.offset(), range.toEnd() ? null : range.length()));
+            }
             // Lê em blocos sob demanda e fixa o ETag: mudanças no blob durante a leitura geram erro.
-            return blob(key).openInputStream(options);
+            BlobInputStream in = blob.openInputStream(options);
+            long size = in.getProperties().getBlobSize();
+            try {
+                return new ObjectContent(in, range.resolve(size), size);
+            } catch (RangeNotSatisfiableException e) {
+                closeQuietly(in, e);
+                throw e;
+            }
         } catch (AzureException e) {
             throw translate(e, "Falha ao ler " + key);
+        }
+    }
+
+    @Override
+    public void checkAccess() {
+        try {
+            if (!container.exists()) {
+                throw new StorageException("Container não existe: " + container.getBlobContainerName(), null);
+            }
+        } catch (AzureException e) {
+            throw translate(e, "Falha ao acessar o container " + container.getBlobContainerName());
+        }
+    }
+
+    private static void closeQuietly(InputStream in, Exception cause) {
+        try {
+            in.close();
+        } catch (IOException | RuntimeException e) {
+            cause.addSuppressed(e);
         }
     }
 

@@ -7,6 +7,7 @@ import com.example.storage.StorageStreams;
 import com.example.storage.Condition;
 import com.example.storage.DeleteResult;
 import com.example.storage.MultipartSession;
+import com.example.storage.ObjectContent;
 import com.example.storage.ObjectInfo;
 import com.example.storage.ObjectMetadata;
 import com.example.storage.ObjectNotFoundException;
@@ -133,24 +134,44 @@ public final class GcsObjectStorage implements ObjectStorage {
 
     @Override
     public InputStream open(String key, ByteRange range) {
+        return read(key, range).stream();
+    }
+
+    /**
+     * O canal do GCS lê sob demanda: a faixa é resolvida contra o tamanho do {@code Blob},
+     * já buscado para fixar a generation, e uma faixa fora do objeto falha aqui, não no consumo.
+     */
+    @Override
+    public ObjectContent read(String key, ByteRange range) {
         try {
             Blob blob = storage.get(BlobId.of(bucket, key));
             if (blob == null) {
                 throw new ObjectNotFoundException("Objeto não encontrado: " + uri(key), null);
             }
+            long size = blob.getSize();
+            ByteRange resolved = range.resolve(size);
             // Fixa a generation lida acima: uma sobrescrita durante a leitura gera erro, não mistura versões.
             ReadChannel reader = storage.reader(BlobId.of(bucket, key, blob.getGeneration()));
-            if (!range.isAll()) {
-                reader.seek(range.offset());
-                if (!range.toEnd()) {
-                    reader = reader.limit(range.offset() + range.length());
-                }
+            if (!resolved.isAll()) {
+                reader.seek(resolved.offset());
+                reader = reader.limit(resolved.offset() + resolved.length());
             }
-            return Channels.newInputStream(reader);
+            return new ObjectContent(Channels.newInputStream(reader), resolved, size);
         } catch (BaseServiceException e) {
             throw translate(e, "Falha ao ler " + uri(key));
         } catch (IOException e) {
             throw new StorageException("Falha ao ler " + uri(key), e);
+        }
+    }
+
+    /** Uma página de um objeto: exige só {@code storage.objects.list}, não permissão sobre o bucket. */
+    @Override
+    public void checkAccess() {
+        try {
+            storage.list(bucket, Storage.BlobListOption.pageSize(1));
+        } catch (BaseServiceException e) {
+            throw e.getCode() == 404 ? new StorageException("Bucket não existe: " + uri(""), e)
+                    : translate(e, "Falha ao acessar " + uri(""));
         }
     }
 

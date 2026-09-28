@@ -5,14 +5,18 @@ import com.example.storage.CommonPrefix;
 import com.example.storage.ListEntry;
 import com.example.storage.MultipartConfig;
 import com.example.storage.MultipartOutputStream;
+import com.example.storage.ObjectContent;
 import com.example.storage.ObjectInfo;
 import com.example.storage.ObjectMetadata;
 import com.example.storage.ObjectNotFoundException;
 import com.example.storage.ObjectStorage;
 import com.example.storage.ObjectSummary;
+import com.example.storage.ObjectTooLargeException;
 import com.example.storage.PreconditionFailedException;
 import com.example.storage.PresignedRequest;
 import com.example.storage.PutOptions;
+import com.example.storage.RangeNotSatisfiableException;
+import com.example.storage.StorageException;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -53,6 +57,16 @@ public abstract class ObjectStorageContract {
     /** {@code false} quando as URLs pré-assinadas não são acessíveis por HTTP (ex.: em memória). */
     protected boolean supportsHttpPresign() {
         return true;
+    }
+
+    /** {@code false} quando o backend ignora {@code If-None-Match}/{@code If-Match} (ex.: LocalStack 3.0). */
+    protected boolean supportsConditionalWrites() {
+        return true;
+    }
+
+    /** Storage apontando para um bucket que não existe; {@code null} pula o teste. */
+    protected ObjectStorage storageWithMissingBucket() {
+        return null;
     }
 
     /** Mais de 1000 objetos exercita a paginação de S3, GCS e OCI. */
@@ -113,6 +127,86 @@ public abstract class ObjectStorageContract {
         assertArrayEquals(data, read(key, ByteRange.all()));
         assertArrayEquals(Arrays.copyOfRange(data, 10, 15), read(key, ByteRange.of(10, 5)));
         assertArrayEquals(Arrays.copyOfRange(data, 95, 100), read(key, ByteRange.from(95)));
+    }
+
+    private byte[] putSequence(String key) {
+        byte[] data = new byte[100];
+        for (int i = 0; i < data.length; i++) {
+            data[i] = (byte) i;
+        }
+        storage().put(key, data, PutOptions.of("application/octet-stream"));
+        return data;
+    }
+
+    @Test
+    void openLeSufixoECortaFaixaNoFimDoObjeto() {
+        String key = key("sufixo.bin");
+        byte[] data = putSequence(key);
+
+        assertArrayEquals(Arrays.copyOfRange(data, 95, 100), read(key, ByteRange.suffix(5)));
+        assertArrayEquals(data, read(key, ByteRange.suffix(1_000)));
+        assertArrayEquals(Arrays.copyOfRange(data, 95, 100), read(key, ByteRange.of(95, 10)));
+    }
+
+    @Test
+    void faixaForaDoObjetoFalhaNaChamada() {
+        String key = key("fora.bin");
+        putSequence(key);
+
+        assertThrows(RangeNotSatisfiableException.class, () -> storage().open(key, ByteRange.from(100)));
+        assertThrows(RangeNotSatisfiableException.class, () -> storage().read(key, ByteRange.of(200, 5)));
+    }
+
+    @Test
+    void faixaEmObjetoVazioFalha() {
+        String key = key("vazio-faixa");
+        storage().put(key, new byte[0], PutOptions.of("text/plain"));
+
+        assertThrows(RangeNotSatisfiableException.class, () -> storage().open(key, ByteRange.of(0, 1)));
+        assertThrows(RangeNotSatisfiableException.class, () -> storage().open(key, ByteRange.suffix(1)));
+    }
+
+    @Test
+    void readDevolveTamanhoEFaixaServida() throws IOException {
+        String key = key("read.bin");
+        byte[] data = putSequence(key);
+
+        try (ObjectContent content = storage().read(key, ByteRange.of(10, 5))) {
+            assertTrue(content.isPartial());
+            assertEquals(5, content.contentLength());
+            assertEquals(100, content.totalSize());
+            assertEquals("bytes 10-14/100", content.contentRange().orElseThrow());
+            assertArrayEquals(Arrays.copyOfRange(data, 10, 15), content.stream().readAllBytes());
+        }
+        try (ObjectContent content = storage().read(key, ByteRange.suffix(3))) {
+            assertEquals("bytes 97-99/100", content.contentRange().orElseThrow());
+            assertArrayEquals(Arrays.copyOfRange(data, 97, 100), content.stream().readAllBytes());
+        }
+        try (ObjectContent content = storage().read(key, ByteRange.all())) {
+            assertFalse(content.isPartial());
+            assertEquals(100, content.contentLength());
+            assertTrue(content.contentRange().isEmpty());
+            assertArrayEquals(data, content.stream().readAllBytes());
+        }
+    }
+
+    @Test
+    void readDeObjetoInexistenteLancaNotFound() {
+        assertThrows(ObjectNotFoundException.class, () -> storage().read(key("nao-existe"), ByteRange.all()).close());
+    }
+
+    @Test
+    void checkAccessPassaNoBucketConfigurado() {
+        assertDoesNotThrow(storage()::checkAccess);
+    }
+
+    @Test
+    void checkAccessFalhaComBucketInexistente() {
+        ObjectStorage missing = storageWithMissingBucket();
+        assumeTrue(missing != null, "implementação sem storage de bucket inexistente");
+
+        StorageException error = assertThrows(StorageException.class, missing::checkAccess);
+        assertFalse(error instanceof ObjectNotFoundException, "bucket ausente não é objeto ausente");
     }
 
     @Test
@@ -215,6 +309,7 @@ public abstract class ObjectStorageContract {
 
     @Test
     void putIfNotExistsSoGravaUmaVez() {
+        assumeTrue(supportsConditionalWrites(), "backend sem escrita condicional");
         String key = key("unico");
         storage().put(key, bytes("primeiro"), PutOptions.of("text/plain").ifNotExists());
 
@@ -225,6 +320,7 @@ public abstract class ObjectStorageContract {
 
     @Test
     void putIfVersionMatchesDetectaEscritaConcorrente() {
+        assumeTrue(supportsConditionalWrites(), "backend sem escrita condicional");
         String key = key("cas");
         String v1 = storage().put(key, bytes("v1"), PutOptions.of("text/plain"));
 
@@ -238,6 +334,7 @@ public abstract class ObjectStorageContract {
 
     @Test
     void putIfVersionMatchesEmObjetoInexistenteFalha() {
+        assumeTrue(supportsConditionalWrites(), "backend sem escrita condicional");
         String key = key("cas-inexistente");
         String version = storage().put(key, bytes("x"), PutOptions.of("text/plain"));
         storage().delete(key);
@@ -290,6 +387,46 @@ public abstract class ObjectStorageContract {
 
         assertEquals(data.length, storage().head(key).orElseThrow().size());
         assertArrayEquals(data, read(key, ByteRange.all()));
+    }
+
+    @Test
+    void multipartVazioGeraObjetoVazio() throws IOException {
+        String key = key("multipart-vazio.bin");
+
+        try (MultipartOutputStream out = MultipartOutputStream.open(storage(), key, ObjectMetadata.of("text/csv"),
+                MultipartConfig.sequential(MultipartConfig.MIN_PART_SIZE))) {
+            out.commit();
+        }
+
+        assertEquals(0, storage().head(key).orElseThrow().size());
+    }
+
+    @Test
+    void multipartSequencialMontaOObjetoCompleto() throws IOException {
+        String key = key("multipart-seq.bin");
+        byte[] data = new byte[MultipartConfig.MIN_PART_SIZE + 77];
+        new Random(11).nextBytes(data);
+
+        try (MultipartOutputStream out = MultipartOutputStream.open(storage(), key, ObjectMetadata.of("application/octet-stream"),
+                MultipartConfig.sequential(MultipartConfig.MIN_PART_SIZE))) {
+            assertNotNull(out.uploadId());
+            out.write(data);
+            out.commit();
+        }
+
+        assertArrayEquals(data, read(key, ByteRange.all()));
+    }
+
+    @Test
+    void multipartAcimaDoLimiteNaoPublica() {
+        String key = key("multipart-limite.bin");
+        MultipartConfig config = MultipartConfig.sequential(MultipartConfig.MIN_PART_SIZE).withMaxObjectBytes(100);
+
+        try (MultipartOutputStream out = MultipartOutputStream.open(storage(), key, ObjectMetadata.of("application/octet-stream"), config)) {
+            assertThrows(ObjectTooLargeException.class, () -> out.write(new byte[101]));
+        }
+
+        assertTrue(storage().head(key).isEmpty());
     }
 
     @Test

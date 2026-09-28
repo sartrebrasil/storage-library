@@ -3,6 +3,7 @@ package com.example.storage.oci;
 import com.example.storage.ByteRange;
 import com.example.storage.CommonPrefix;
 import com.example.storage.ListEntry;
+import com.example.storage.ObjectContent;
 import com.example.storage.ObjectInfo;
 import com.example.storage.ObjectMetadata;
 import com.example.storage.ObjectNotFoundException;
@@ -10,8 +11,10 @@ import com.example.storage.ObjectSummary;
 import com.example.storage.PreconditionFailedException;
 import com.example.storage.PresignedRequest;
 import com.example.storage.PutOptions;
+import com.example.storage.RangeNotSatisfiableException;
 import com.example.storage.StorageException;
 import com.oracle.bmc.model.BmcException;
+import com.oracle.bmc.model.Range;
 import com.oracle.bmc.objectstorage.ObjectStoragePaginators;
 import com.oracle.bmc.objectstorage.model.CreatePreauthenticatedRequestDetails;
 import com.oracle.bmc.objectstorage.model.ListObjects;
@@ -115,13 +118,46 @@ class OciOperationsTest {
     @Test
     void openEnviaFaixaInclusiva() throws Exception {
         when(client.getObject(any())).thenReturn(GetObjectResponse.builder()
-                .inputStream(new ByteArrayInputStream(new byte[5])).build());
+                .inputStream(new ByteArrayInputStream(new byte[5])).contentLength(5L)
+                .contentRange(Range.parse("bytes 10-14/100")).build());
 
         storage.open("k", ByteRange.of(10, 5)).close();
 
         ArgumentCaptor<GetObjectRequest> captor = ArgumentCaptor.forClass(GetObjectRequest.class);
         verify(client).getObject(captor.capture());
         assertEquals("bytes=10-14", captor.getValue().getRange().toString());
+    }
+
+    @Test
+    void readEnviaSufixoNativoEDevolveFaixaServida() throws Exception {
+        when(client.getObject(any())).thenReturn(GetObjectResponse.builder()
+                .inputStream(new ByteArrayInputStream(new byte[5])).contentLength(5L)
+                .contentRange(Range.parse("bytes 95-99/100")).build());
+
+        try (ObjectContent content = storage.read("k", ByteRange.suffix(5))) {
+            assertEquals(5, content.contentLength());
+            assertEquals(100, content.totalSize());
+            assertEquals("bytes 95-99/100", content.contentRange().orElseThrow());
+        }
+
+        ArgumentCaptor<GetObjectRequest> captor = ArgumentCaptor.forClass(GetObjectRequest.class);
+        verify(client).getObject(captor.capture());
+        assertEquals("bytes=-5", captor.getValue().getRange().toString());
+    }
+
+    @Test
+    void faixaForaDoObjetoViraRangeNotSatisfiable() {
+        when(client.getObject(any())).thenThrow(new BmcException(416, "InvalidRange", "range", "req"));
+
+        assertThrows(RangeNotSatisfiableException.class, () -> storage.open("k", ByteRange.from(500)));
+    }
+
+    @Test
+    void checkAccessDistingueBucketInexistente() {
+        when(client.headBucket(any())).thenThrow(new BmcException(404, null, "not found", "req"));
+
+        StorageException e = assertThrows(StorageException.class, storage::checkAccess);
+        assertFalse(e instanceof ObjectNotFoundException);
     }
 
     @Test

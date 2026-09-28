@@ -2,12 +2,14 @@ package com.example.storage.gcs;
 
 import com.example.storage.ByteRange;
 import com.example.storage.ListEntry;
+import com.example.storage.ObjectContent;
 import com.example.storage.ObjectInfo;
 import com.example.storage.ObjectMetadata;
 import com.example.storage.ObjectNotFoundException;
 import com.example.storage.ObjectSummary;
 import com.example.storage.PreconditionFailedException;
 import com.example.storage.PutOptions;
+import com.example.storage.RangeNotSatisfiableException;
 import com.google.api.gax.paging.Page;
 import com.google.cloud.ReadChannel;
 import com.google.cloud.storage.Blob;
@@ -96,6 +98,7 @@ class GcsOperationsTest {
     @Test
     void openFixaGenerationEAplicaFaixa() throws Exception {
         Blob found = blob("k", 9);
+        when(found.getSize()).thenReturn(100L);
         ReadChannel reader = mock(ReadChannel.class);
         ReadChannel limited = mock(ReadChannel.class);
         when(client.get(BlobId.of("bucket", "k"))).thenReturn(found);
@@ -107,6 +110,42 @@ class GcsOperationsTest {
         verify(reader).seek(10);
         verify(reader).limit(15);
         verify(limited).close();
+    }
+
+    @Test
+    void readResolveSufixoPeloTamanhoDoBlob() throws Exception {
+        Blob found = blob("k", 9);
+        when(found.getSize()).thenReturn(100L);
+        ReadChannel reader = mock(ReadChannel.class);
+        when(client.get(BlobId.of("bucket", "k"))).thenReturn(found);
+        when(client.reader(BlobId.of("bucket", "k", 9L))).thenReturn(reader);
+        when(reader.limit(100)).thenReturn(reader);
+
+        try (ObjectContent content = storage.read("k", ByteRange.suffix(5))) {
+            assertEquals(5, content.contentLength());
+            assertEquals(100, content.totalSize());
+            assertEquals("bytes 95-99/100", content.contentRange().orElseThrow());
+        }
+        verify(reader).seek(95);
+        verify(reader).limit(100);
+    }
+
+    @Test
+    void faixaForaDoBlobFalhaAntesDeAbrirOCanal() {
+        Blob found = blob("k", 9);   // 5 bytes
+        when(client.get(BlobId.of("bucket", "k"))).thenReturn(found);
+
+        assertThrows(RangeNotSatisfiableException.class, () -> storage.open("k", ByteRange.from(5)));
+        verify(client, never()).reader(any(BlobId.class));
+    }
+
+    @Test
+    void checkAccessFalhaComBucketInexistente() {
+        when(client.list(eq("bucket"), any(Storage.BlobListOption[].class))).thenThrow(new StorageException(404, "not found"));
+
+        com.example.storage.StorageException e = assertThrows(com.example.storage.StorageException.class, storage::checkAccess);
+        assertFalse(e instanceof ObjectNotFoundException);
+        assertTrue(e.getMessage().contains("não existe"), e.getMessage());
     }
 
     @Test

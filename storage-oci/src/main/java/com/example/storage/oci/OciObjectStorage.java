@@ -6,6 +6,7 @@ import com.example.storage.ListEntry;
 import com.example.storage.StorageStreams;
 import com.example.storage.Condition;
 import com.example.storage.MultipartSession;
+import com.example.storage.ObjectContent;
 import com.example.storage.ObjectInfo;
 import com.example.storage.ObjectMetadata;
 import com.example.storage.ObjectNotFoundException;
@@ -28,9 +29,11 @@ import com.oracle.bmc.objectstorage.requests.CreatePreauthenticatedRequestReques
 import com.oracle.bmc.objectstorage.requests.DeleteObjectRequest;
 import com.oracle.bmc.objectstorage.requests.GetObjectRequest;
 import com.oracle.bmc.objectstorage.requests.GetWorkRequestRequest;
+import com.oracle.bmc.objectstorage.requests.HeadBucketRequest;
 import com.oracle.bmc.objectstorage.requests.HeadObjectRequest;
 import com.oracle.bmc.objectstorage.requests.ListObjectsRequest;
 import com.oracle.bmc.objectstorage.requests.PutObjectRequest;
+import com.oracle.bmc.objectstorage.responses.GetObjectResponse;
 import com.oracle.bmc.objectstorage.responses.HeadObjectResponse;
 
 import java.io.InputStream;
@@ -162,15 +165,41 @@ public final class OciObjectStorage implements ObjectStorage {
 
     @Override
     public InputStream open(String key, ByteRange range) {
+        return read(key, range).stream();
+    }
+
+    /** Uma chamada só: a resposta traz o tamanho e a faixa servida, com o total do objeto. */
+    @Override
+    public ObjectContent read(String key, ByteRange range) {
         GetObjectRequest.Builder request = GetObjectRequest.builder()
                 .namespaceName(namespace).bucketName(bucket).objectName(key);
-        if (!range.isAll()) {
+        if (range.isSuffix()) {
+            request.range(new Range(null, range.length()));   // bytes=-n
+        } else if (!range.isAll()) {
             request.range(new Range(range.offset(), range.toEnd() ? null : range.lastByte()));
         }
         try {
-            return client.getObject(request.build()).getInputStream();
+            GetObjectResponse response = client.getObject(request.build());
+            Range served = response.getContentRange();
+            if (served == null) {
+                return new ObjectContent(response.getInputStream(), ByteRange.all(), response.getContentLength());
+            }
+            return new ObjectContent(response.getInputStream(),
+                    ByteRange.of(served.getStartByte(), served.getEndByte() - served.getStartByte() + 1),
+                    served.getContentLength());
         } catch (BmcException e) {
             throw translate(e, "Falha ao ler " + uri(key));
+        }
+    }
+
+    @Override
+    public void checkAccess() {
+        try {
+            client.headBucket(HeadBucketRequest.builder().namespaceName(namespace).bucketName(bucket).build());
+        } catch (BmcException e) {
+            // HEAD não tem corpo: o 404 de bucket inexistente chega sem o código BucketNotFound
+            throw e.getStatusCode() == 404 ? new StorageException("Bucket não existe: " + uri(""), e)
+                    : translate(e, "Falha ao acessar " + uri(""));
         }
     }
 
