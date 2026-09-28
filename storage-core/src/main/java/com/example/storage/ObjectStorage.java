@@ -19,6 +19,9 @@ import java.util.stream.Stream;
  *   <li>Objeto inexistente: {@link #head} devolve vazio; {@link #open} e {@link #copy}
  *       lançam {@link ObjectNotFoundException}; {@link #delete} não faz nada.</li>
  *   <li>Pré-condição não atendida lança {@link PreconditionFailedException}.</li>
+ *   <li>Faixa fora do objeto lança {@link RangeNotSatisfiableException} na chamada a
+ *       {@link #open} ou {@link #read}, nunca durante o consumo do stream. A faixa é
+ *       cortada no fim do objeto, como no HTTP.</li>
  *   <li>Demais falhas lançam {@link StorageException}.</li>
  * </ul>
  */
@@ -50,6 +53,36 @@ public interface ObjectStorage {
 
     default InputStream open(String key) {
         return open(key, ByteRange.all());
+    }
+
+    /**
+     * Como {@link #open}, devolvendo também o tamanho do corpo, a faixa servida e o
+     * tamanho total, para repassar a leitura numa resposta HTTP ({@code 200}/{@code 206}).
+     * O chamador deve fechar o conteúdo.
+     *
+     * <p>O padrão faz {@link #head} e {@link #open}; os adapters obtêm tudo na própria
+     * leitura quando o provedor permite.</p>
+     *
+     * @throws ObjectNotFoundException      o objeto não existe
+     * @throws RangeNotSatisfiableException a faixa não existe no objeto
+     */
+    default ObjectContent read(String key, ByteRange range) {
+        ObjectInfo info = head(key).orElseThrow(() -> new ObjectNotFoundException("Objeto não encontrado: " + key, null));
+        ByteRange resolved = range.resolve(info.size());
+        return new ObjectContent(open(key, resolved), resolved, info.size());
+    }
+
+    /**
+     * Confirma que o bucket existe e que as credenciais alcançam. Base de health checks.
+     * O padrão lê o primeiro item de {@link #list}; os adapters usam a chamada de bucket do
+     * provedor.
+     *
+     * @throws StorageException bucket inexistente, sem permissão ou inacessível
+     */
+    default void checkAccess() {
+        try (Stream<ObjectSummary> objects = list("")) {
+            objects.findFirst();
+        }
     }
 
     /**
