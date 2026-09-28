@@ -39,6 +39,11 @@ final class GcsMultipartSession implements MultipartSession {
     }
 
     @Override
+    public String uploadId() {
+        return uploadId;
+    }
+
+    @Override
     public UploadedPart uploadPart(int partNumber, byte[] data, int length) {
         UploadPartRequest request = UploadPartRequest.builder()
                 .bucket(bucket)

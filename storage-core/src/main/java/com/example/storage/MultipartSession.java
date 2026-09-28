@@ -11,6 +11,12 @@ public interface MultipartSession {
     String key();
 
     /**
+     * Identifica o upload em logs e mensagens de erro. É o id nativo do provedor
+     * (S3, GCS, OCI) ou, onde ele não existe (Azure), o id gerado pela sessão.
+     */
+    String uploadId();
+
+    /**
      * Envia uma parte. {@code data} é um buffer reutilizado pelo chamador:
      * a implementação NÃO pode guardar a referência depois de retornar.
      * Pode ser reexecutada (retry) com os mesmos bytes.
