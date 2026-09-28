@@ -1,2 +1,3 @@
 com.example.storage.spring.StorageAutoConfiguration
 com.example.storage.spring.StorageHealthAutoConfiguration
+com.example.storage.spring.StorageMetricsAutoConfiguration
