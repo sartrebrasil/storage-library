@@ -9,6 +9,7 @@ import com.example.storage.gcs.GcsObjectStorage;
 import com.example.storage.memory.InMemoryObjectStorage;
 import com.example.storage.oci.OciObjectStorage;
 import com.example.storage.s3.S3ObjectStorage;
+import com.example.storage.sftp.SftpObjectStorage;
 import com.google.cloud.NoCredentials;
 import com.google.cloud.storage.HttpStorageOptions;
 import com.oracle.bmc.objectstorage.responses.GetNamespaceResponse;
@@ -321,6 +322,51 @@ class StorageAutoConfigurationTest {
         runner.withPropertyValues("storage.provider=filesystem", "storage.bucket=reports",
                         "storage.filesystem.root=" + tempDir)
                 .withClassLoader(new FilteredClassLoader(FileSystemObjectStorage.class))
+                .run(context -> assertThat(context).doesNotHaveBean(ObjectStorage.class));
+    }
+
+    @Test
+    void sftpSemHostFalhaNaInicializacao() {
+        runner.withPropertyValues("storage.provider=sftp", "storage.bucket=reports",
+                        "storage.sftp.root=/reports", "storage.sftp.username=u", "storage.sftp.password=p")
+                .run(context -> assertThat(context).hasFailed().getFailure().hasRootCauseMessage(
+                        "storage.sftp.host é obrigatório quando storage.provider=sftp"));
+    }
+
+    @Test
+    void sftpSemUsernameFalhaNaInicializacao() {
+        runner.withPropertyValues("storage.provider=sftp", "storage.bucket=reports", "storage.sftp.root=/reports",
+                        "storage.sftp.host=sftp.example.com", "storage.sftp.password=p")
+                .run(context -> assertThat(context).hasFailed().getFailure().hasRootCauseMessage(
+                        "storage.sftp.username é obrigatório quando storage.provider=sftp"));
+    }
+
+    @Test
+    void sftpSemPasswordNemChaveFalhaNaInicializacao() {
+        runner.withPropertyValues("storage.provider=sftp", "storage.bucket=reports", "storage.sftp.root=/reports",
+                        "storage.sftp.host=sftp.example.com", "storage.sftp.username=u",
+                        "storage.sftp.insecure-trust-all-hosts=true")
+                .run(context -> assertThat(context).hasFailed().getFailure().hasRootCauseMessage(
+                        "Defina storage.sftp.password ou storage.sftp.private-key-path"));
+    }
+
+    @Test
+    void sftpSemRootFalhaNaInicializacaoAntesDeConectar() {
+        // host/username/password presentes e insecure ligado: se conectasse à rede pra falhar
+        // depois, esse teste ficaria lento/instável. requireSftpRoot roda antes do connect().
+        runner.withPropertyValues("storage.provider=sftp", "storage.bucket=reports",
+                        "storage.sftp.host=sftp.example.com", "storage.sftp.username=u", "storage.sftp.password=p",
+                        "storage.sftp.insecure-trust-all-hosts=true")
+                .run(context -> assertThat(context).hasFailed().getFailure().hasRootCauseMessage(
+                        "storage.sftp.root é obrigatório quando storage.provider=sftp"));
+    }
+
+    @Test
+    void semAdapterSftpNoClasspathNaoCriaStorage() {
+        runner.withPropertyValues("storage.provider=sftp", "storage.bucket=reports", "storage.sftp.root=/reports",
+                        "storage.sftp.host=sftp.example.com", "storage.sftp.username=u", "storage.sftp.password=p",
+                        "storage.sftp.insecure-trust-all-hosts=true")
+                .withClassLoader(new FilteredClassLoader(SftpObjectStorage.class))
                 .run(context -> assertThat(context).doesNotHaveBean(ObjectStorage.class));
     }
 }

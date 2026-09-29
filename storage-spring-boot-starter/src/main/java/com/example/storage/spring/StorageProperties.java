@@ -41,9 +41,10 @@ public record StorageProperties(Provider provider,
                                 @DefaultValue Gcs gcs,
                                 @DefaultValue Azure azure,
                                 @DefaultValue Oci oci,
-                                @DefaultValue Filesystem filesystem) {
+                                @DefaultValue Filesystem filesystem,
+                                @DefaultValue Sftp sftp) {
 
-    public enum Provider { S3, GCS, AZURE, OCI, FILESYSTEM }
+    public enum Provider { S3, GCS, AZURE, OCI, FILESYSTEM, SFTP }
 
     public StorageProperties {
         buckets = buckets == null ? Map.of() : Map.copyOf(buckets);
@@ -111,5 +112,39 @@ public record StorageProperties(Provider provider,
      * @param root diretório base no filesystem local; obrigatório com {@code provider: filesystem}
      */
     public record Filesystem(Path root) {
+    }
+
+    /**
+     * Cada bucket vira uma subpasta de {@code root} no servidor. Autenticação por
+     * {@code password} ou {@code privateKeyPath}, nunca as duas. Identidade do servidor por
+     * {@code knownHosts}, senão {@code ~/.ssh/known_hosts}; sem nenhum dos dois, exige
+     * {@code insecureTrustAllHosts} (não recomendado fora de dev/teste).
+     *
+     * @param host                  obrigatório com {@code provider: sftp}
+     * @param port                  porta do servidor SSH
+     * @param username              obrigatório
+     * @param password              autenticação por senha
+     * @param privateKeyPath        autenticação por chave privada (arquivo)
+     * @param root                  caminho absoluto no servidor; obrigatório com {@code provider: sftp}
+     * @param knownHosts            arquivo {@code known_hosts} para verificar a identidade do servidor
+     * @param insecureTrustAllHosts pula a verificação de host key (exposto a MITM); só dev/teste
+     */
+    public record Sftp(String host, @DefaultValue("22") int port, String username, String password,
+                       String privateKeyPath, String root, String knownHosts,
+                       @DefaultValue("false") boolean insecureTrustAllHosts) {
+
+        /** {@code ${VAR:}} chega como texto vazio: vazio conta como ausente. */
+        public Sftp {
+            host = blankToNull(host);
+            username = blankToNull(username);
+            password = blankToNull(password);
+            privateKeyPath = blankToNull(privateKeyPath);
+            root = blankToNull(root);
+            knownHosts = blankToNull(knownHosts);
+        }
+
+        private static String blankToNull(String value) {
+            return value == null || value.isBlank() ? null : value;
+        }
     }
 }

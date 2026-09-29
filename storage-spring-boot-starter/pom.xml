@@ -63,6 +63,12 @@
       <version>${project.version}</version>
       <optional>true</optional>
     </dependency>
+    <dependency>
+      <groupId>com.example</groupId>
+      <artifactId>storage-sftp</artifactId>
+      <version>${project.version}</version>
+      <optional>true</optional>
+    </dependency>
     <!-- Health indicator: ativo só quando a aplicação tem o Actuator. Sem transitivas: o
          Jackson delas rebaixaria o dos SDKs, e a aplicação traz o próprio Actuator. -->
     <dependency>
@@ -119,6 +125,12 @@
       <groupId>org.assertj</groupId>
       <artifactId>assertj-core</artifactId>
       <version>${assertj.version}</version>
+      <scope>test</scope>
+    </dependency>
+    <!-- Só o teste do provider sftp usa isto, contra um servidor OpenSSH real (atmoz/sftp) -->
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>testcontainers-junit-jupiter</artifactId>
       <scope>test</scope>
     </dependency>
   </dependencies>

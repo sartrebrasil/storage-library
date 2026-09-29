@@ -19,6 +19,7 @@
     <module>storage-azure</module>
     <module>storage-oci</module>
     <module>storage-filesystem</module>
+    <module>storage-sftp</module>
     <module>storage-spring-boot-starter</module>
   </modules>
 
