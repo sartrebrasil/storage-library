@@ -50,6 +50,11 @@
       </dependency>
       <dependency>
         <groupId>com.example</groupId>
+        <artifactId>storage-sftp</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>com.example</groupId>
         <artifactId>storage-spring-boot-starter</artifactId>
         <version>${project.version}</version>
       </dependency>

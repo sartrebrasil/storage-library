@@ -18,6 +18,7 @@ multipart em streaming (sem manter o arquivo inteiro em memória ou em disco).
 | `storage-azure` | Adapter Azure Blob Storage (block blobs). |
 | `storage-oci` | Adapter OCI Object Storage. |
 | `storage-filesystem` | Adapter sobre filesystem local (`java.nio.file`), sem SDK de nuvem. |
+| `storage-sftp` | Adapter sobre SFTP (sshj), para servidores que só falam SSH. |
 | `storage-spring-boot-starter` | Auto-configuração Spring Boot 3.5 por properties (`storage.*`). |
 | `storage-bom` | Alinha as versões dos módulos acima. |
 
@@ -128,6 +129,8 @@ ObjectStorage storage = AzureBlobObjectStorage.withUserDelegation(containerClien
 ObjectStorage storage = new OciObjectStorage(objectStorageClient, namespace, "reports");
 // Filesystem local: sem SDK, root é o "bucket"
 ObjectStorage storage = new FileSystemObjectStorage(Path.of("/var/data/reports"));
+// SFTP: root é um caminho absoluto no servidor; o SSHClient chega já conectado/autenticado
+ObjectStorage storage = new SftpObjectStorage(sshClient, "/reports");
 ```
 
 ```java
@@ -209,7 +212,7 @@ Adicione o starter e o adapter do provedor:
 
 ```yaml
 storage:
-  provider: s3              # s3 | gcs | azure | oci | filesystem; sem valor, nenhum bean é criado
+  provider: s3              # s3 | gcs | azure | oci | filesystem | sftp; sem valor, nenhum bean é criado
   bucket: reports           # no Azure, o container; vários: buckets (abaixo)
   s3:
     region: sa-east-1
@@ -229,6 +232,14 @@ storage:
     namespace: meu-namespace                        # opcional (consultado na API)
   filesystem:
     root: /var/data/oobj-storage                    # cada bucket vira uma subpasta de root
+  sftp:
+    host: sftp.exemplo.com.br
+    port: 22                                        # padrão
+    username: oobj
+    password: ${SFTP_PASSWORD}                      # ou private-key-path, nunca os dois
+    root: /reports                                  # cada bucket vira uma subpasta de root
+    known-hosts: /etc/ssh/known_hosts                # sem valor, tenta ~/.ssh/known_hosts
+    insecure-trust-all-hosts: false                  # true pula a verificação de host key (só dev/teste)
 ```
 
 Com o Actuator no classpath, o starter registra `storageHealthIndicator` (chave `storage`
@@ -279,6 +290,6 @@ com connection string o SAS usa a chave da conta; com `endpoint`, user delegatio
 
 ## Testes
 
-`mvn install` roda os testes de contrato contra MinIO, LocalStack 3.0 e Azurite via
-Testcontainers (pulados sem Docker). GCS e OCI não têm emulador compatível:
-são cobertos por testes com mocks e assinatura local real.
+`mvn install` roda os testes de contrato contra MinIO, LocalStack 3.0, Azurite e um servidor
+OpenSSH sftp-server real (imagem `atmoz/sftp`) via Testcontainers (pulados sem Docker). GCS e
+OCI não têm emulador compatível: são cobertos por testes com mocks e assinatura local real.

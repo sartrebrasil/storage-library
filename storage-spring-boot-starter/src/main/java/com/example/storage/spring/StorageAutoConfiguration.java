@@ -10,6 +10,7 @@ import com.example.storage.filesystem.FileSystemObjectStorage;
 import com.example.storage.gcs.GcsObjectStorage;
 import com.example.storage.oci.OciObjectStorage;
 import com.example.storage.s3.S3ObjectStorage;
+import com.example.storage.sftp.SftpObjectStorage;
 import com.google.cloud.storage.HttpStorageOptions;
 import com.google.cloud.storage.MultipartUploadClient;
 import com.google.cloud.storage.MultipartUploadSettings;
@@ -17,6 +18,8 @@ import com.google.cloud.storage.Storage;
 import com.oracle.bmc.auth.ConfigFileAuthenticationDetailsProvider;
 import com.oracle.bmc.objectstorage.ObjectStorageClient;
 import com.oracle.bmc.objectstorage.requests.GetNamespaceRequest;
+import net.schmizz.sshj.SSHClient;
+import net.schmizz.sshj.transport.verification.PromiscuousVerifier;
 import org.springframework.beans.factory.BeanFactory;
 import org.springframework.beans.factory.BeanFactoryAware;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -54,6 +57,7 @@ import software.amazon.awssdk.services.s3.S3ClientBuilder;
 import software.amazon.awssdk.services.s3.S3Configuration;
 import software.amazon.awssdk.services.s3.presigner.S3Presigner;
 
+import java.io.File;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.Map;
@@ -92,6 +96,14 @@ public class StorageAutoConfiguration {
         Path root = properties.filesystem().root();
         if (root == null) {
             throw new IllegalStateException("storage.filesystem.root é obrigatório quando storage.provider=filesystem");
+        }
+        return root;
+    }
+
+    static String requireSftpRoot(StorageProperties properties) {
+        String root = properties.sftp().root();
+        if (root == null) {
+            throw new IllegalStateException("storage.sftp.root é obrigatório quando storage.provider=sftp");
         }
         return root;
     }
@@ -315,6 +327,84 @@ public class StorageAutoConfiguration {
         ObjectStorage filesystemObjectStorage(BucketStorageFactory filesystemBucketStorageFactory,
                                               StorageProperties properties) {
             return filesystemBucketStorageFactory.create(requireBucket(properties));
+        }
+    }
+
+    /**
+     * Sem client próprio da aplicação: o starter conecta e autentica o {@link SSHClient} por
+     * properties. Cada bucket vira a subpasta {@code <root>/<bucket>} no servidor.
+     */
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnClass(SftpObjectStorage.class)
+    @ConditionalOnProperty(prefix = PREFIX, name = "provider", havingValue = "sftp")
+    static class SftpStorageConfiguration {
+
+        @Bean(destroyMethod = "close")
+        @ConditionalOnMissingBean
+        SSHClient sftpSshClient(StorageProperties properties) throws IOException {
+            StorageProperties.Sftp sftp = properties.sftp();
+            if (sftp.host() == null) {
+                throw new IllegalStateException("storage.sftp.host é obrigatório quando storage.provider=sftp");
+            }
+            if (sftp.username() == null) {
+                throw new IllegalStateException("storage.sftp.username é obrigatório quando storage.provider=sftp");
+            }
+            if (sftp.password() == null && sftp.privateKeyPath() == null) {
+                throw new IllegalStateException("Defina storage.sftp.password ou storage.sftp.private-key-path");
+            }
+            requireSftpRoot(properties);   // valida tudo antes de abrir conexão de rede
+            SSHClient client = new SSHClient();
+            configureHostKeyVerification(client, sftp);
+            try {
+                client.connect(sftp.host(), sftp.port());
+                if (sftp.password() != null) {
+                    client.authPassword(sftp.username(), sftp.password());
+                } else {
+                    client.authPublickey(sftp.username(), sftp.privateKeyPath());
+                }
+            } catch (IOException | RuntimeException e) {
+                closeQuietly(client);
+                throw e;
+            }
+            return client;
+        }
+
+        /** Sem {@code known-hosts} nem {@code insecure-trust-all-hosts}, falha cedo em vez de aceitar qualquer host key. */
+        private static void configureHostKeyVerification(SSHClient client, StorageProperties.Sftp sftp) throws IOException {
+            if (sftp.knownHosts() != null) {
+                client.loadKnownHosts(new File(sftp.knownHosts()));
+            } else if (sftp.insecureTrustAllHosts()) {
+                client.addHostKeyVerifier(new PromiscuousVerifier());
+            } else {
+                try {
+                    client.loadKnownHosts();
+                } catch (IOException e) {
+                    throw new IllegalStateException(
+                            "Nenhum known_hosts encontrado (~/.ssh/known_hosts); defina storage.sftp.known-hosts "
+                                    + "ou storage.sftp.insecure-trust-all-hosts=true (não recomendado fora de dev/teste)", e);
+                }
+            }
+        }
+
+        private static void closeQuietly(SSHClient client) {
+            try {
+                client.close();
+            } catch (IOException ignored) {
+                // a falha que importa é a original da conexão/autenticação
+            }
+        }
+
+        @Bean
+        BucketStorageFactory sftpBucketStorageFactory(SSHClient sftpSshClient, StorageProperties properties) {
+            String root = requireSftpRoot(properties);
+            return bucket -> new SftpObjectStorage(sftpSshClient, root + "/" + bucket);
+        }
+
+        @Bean
+        @ConditionalOnMissingBean(ObjectStorage.class)
+        @Conditional(SingleBucket.class)
+        ObjectStorage sftpObjectStorage(BucketStorageFactory sftpBucketStorageFactory, StorageProperties properties) {
+            return sftpBucketStorageFactory.create(requireBucket(properties));
         }
     }
 

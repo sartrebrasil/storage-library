@@ -1,0 +1,139 @@
+package com.example.storage.sftp;
+
+import com.example.storage.MultipartSession;
+import com.example.storage.ObjectMetadata;
+import com.example.storage.StorageException;
+import com.example.storage.UploadedPart;
+import net.schmizz.sshj.SSHClient;
+import net.schmizz.sshj.sftp.OpenMode;
+import net.schmizz.sshj.sftp.RemoteFile;
+import net.schmizz.sshj.sftp.RemoteResourceInfo;
+import net.schmizz.sshj.sftp.RenameFlags;
+import net.schmizz.sshj.sftp.SFTPClient;
+import net.schmizz.sshj.sftp.SFTPException;
+
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.util.Comparator;
+import java.util.List;
+import java.util.Set;
+import java.util.UUID;
+
+/**
+ * Cada parte vira um arquivo em {@code .uploads/<uploadId>/part-<n>}; {@link #complete}
+ * concatena os arquivos direto no destino, em streaming. Cada chamada abre seu próprio canal
+ * SFTP, então partes em voo em paralelo (via {@code MultipartConfig.maxInFlight}) não competem
+ * pelo mesmo canal.
+ */
+final class SftpMultipartSession implements MultipartSession {
+
+    private final SSHClient sshClient;
+    private final String targetPath;
+    private final String uploadDir;
+    private final String key;
+    private final String uploadId;
+    private final ObjectMetadata metadata;
+
+    SftpMultipartSession(SSHClient sshClient, String targetPath, String uploadDir, String key,
+                         String uploadId, ObjectMetadata metadata) {
+        this.sshClient = sshClient;
+        this.targetPath = targetPath;
+        this.uploadDir = uploadDir;
+        this.key = key;
+        this.uploadId = uploadId;
+        this.metadata = metadata;
+    }
+
+    @Override
+    public String key() {
+        return key;
+    }
+
+    @Override
+    public String uploadId() {
+        return uploadId;
+    }
+
+    @Override
+    public UploadedPart uploadPart(int partNumber, byte[] data, int length) {
+        try (SFTPClient sftp = sshClient.newSFTPClient()) {
+            SftpObjectStorage.mkdirs(sftp, uploadDir);
+            try (RemoteFile file = sftp.open(partPath(partNumber), Set.of(OpenMode.WRITE, OpenMode.CREAT, OpenMode.TRUNC))) {
+                try (OutputStream out = file.new RemoteFileOutputStream()) {
+                    // write(data, 0, length) inteiro de uma vez trava esperando a janela SSH
+                    // expandir; transferTo escreve em blocos de 8 KiB e dá tempo do ACK voltar.
+                    new ByteArrayInputStream(data, 0, length).transferTo(out);
+                }
+            }
+            return new UploadedPart(partNumber, "part-" + partNumber, null);
+        } catch (IOException e) {
+            throw new StorageException("Falha ao gravar parte " + partNumber + " de " + key, e);
+        }
+    }
+
+    @Override
+    public void complete(List<UploadedPart> parts) {
+        List<UploadedPart> sorted = parts.stream()
+                .sorted(Comparator.comparingInt(UploadedPart::partNumber))
+                .toList();
+        String parent = SftpObjectStorage.parentOf(targetPath);
+        String temp = parent + "/.pending-" + uploadId;
+        try (SFTPClient sftp = sshClient.newSFTPClient()) {
+            SftpObjectStorage.mkdirs(sftp, parent);
+            try (RemoteFile out = sftp.open(temp, Set.of(OpenMode.WRITE, OpenMode.CREAT, OpenMode.TRUNC))) {
+                try (OutputStream os = out.new RemoteFileOutputStream()) {
+                    for (UploadedPart part : sorted) {
+                        try (RemoteFile in = sftp.open(partPath(part.partNumber()), Set.of(OpenMode.READ))) {
+                            try (InputStream is = in.new RemoteFileInputStream()) {
+                                is.transferTo(os);
+                            }
+                        }
+                    }
+                }
+            }
+            sftp.rename(temp, targetPath, Set.of(RenameFlags.OVERWRITE, RenameFlags.ATOMIC));
+            SftpObjectStorage.writeMetadata(sftp, targetPath, metadata, UUID.randomUUID().toString());
+        } catch (IOException e) {
+            deleteQuietly(temp);
+            throw new StorageException("Falha ao concluir upload de " + key, e);
+        } finally {
+            deleteUploadDir();
+        }
+    }
+
+    @Override
+    public void abort() {
+        deleteUploadDir();
+    }
+
+    private String partPath(int partNumber) {
+        return uploadDir + "/part-" + partNumber;
+    }
+
+    private void deleteUploadDir() {
+        try (SFTPClient sftp = sshClient.newSFTPClient()) {
+            List<RemoteResourceInfo> entries;
+            try {
+                entries = sftp.ls(uploadDir);
+            } catch (SFTPException notFound) {
+                return;   // já não existe: nada a limpar
+            }
+            for (RemoteResourceInfo entry : entries) {
+                sftp.rm(entry.getPath());
+            }
+            sftp.rmdir(uploadDir);
+        } catch (IOException ignored) {
+            // ponytail: limpeza best-effort; uma parte órfã em .uploads não afeta a leitura de objetos
+        }
+    }
+
+    private void deleteQuietly(String path) {
+        try (SFTPClient sftp = sshClient.newSFTPClient()) {
+            sftp.rm(path);
+        } catch (IOException ignored) {
+            // a falha que importa é a original do upload
+        }
+    }
+}
