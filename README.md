@@ -17,6 +17,7 @@ multipart em streaming (sem manter o arquivo inteiro em memória ou em disco).
 | `storage-gcs` | Adapter Google Cloud Storage (multipart da XML API). |
 | `storage-azure` | Adapter Azure Blob Storage (block blobs). |
 | `storage-oci` | Adapter OCI Object Storage. |
+| `storage-filesystem` | Adapter sobre filesystem local (`java.nio.file`), sem SDK de nuvem. |
 | `storage-spring-boot-starter` | Auto-configuração Spring Boot 3.5 por properties (`storage.*`). |
 | `storage-bom` | Alinha as versões dos módulos acima. |
 
@@ -125,6 +126,8 @@ ObjectStorage storage = AzureBlobObjectStorage.withSharedKey(containerClient);
 ObjectStorage storage = AzureBlobObjectStorage.withUserDelegation(containerClient);
 // OCI
 ObjectStorage storage = new OciObjectStorage(objectStorageClient, namespace, "reports");
+// Filesystem local: sem SDK, root é o "bucket"
+ObjectStorage storage = new FileSystemObjectStorage(Path.of("/var/data/reports"));
 ```
 
 ```java
@@ -206,7 +209,7 @@ Adicione o starter e o adapter do provedor:
 
 ```yaml
 storage:
-  provider: s3              # s3 | gcs | azure | oci; sem valor, nenhum bean é criado
+  provider: s3              # s3 | gcs | azure | oci | filesystem; sem valor, nenhum bean é criado
   bucket: reports           # no Azure, o container; vários: buckets (abaixo)
   s3:
     region: sa-east-1
@@ -224,6 +227,8 @@ storage:
   oci:
     profile: DEFAULT                                # ~/.oci/config ou config-file
     namespace: meu-namespace                        # opcional (consultado na API)
+  filesystem:
+    root: /var/data/oobj-storage                    # cada bucket vira uma subpasta de root
 ```
 
 Com o Actuator no classpath, o starter registra `storageHealthIndicator` (chave `storage`

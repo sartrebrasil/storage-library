@@ -6,6 +6,7 @@ import com.azure.storage.blob.BlobServiceClient;
 import com.azure.storage.blob.BlobServiceClientBuilder;
 import com.example.storage.ObjectStorage;
 import com.example.storage.azure.AzureBlobObjectStorage;
+import com.example.storage.filesystem.FileSystemObjectStorage;
 import com.example.storage.gcs.GcsObjectStorage;
 import com.example.storage.oci.OciObjectStorage;
 import com.example.storage.s3.S3ObjectStorage;
@@ -54,6 +55,7 @@ import software.amazon.awssdk.services.s3.S3Configuration;
 import software.amazon.awssdk.services.s3.presigner.S3Presigner;
 
 import java.io.IOException;
+import java.nio.file.Path;
 import java.util.Map;
 
 /**
@@ -84,6 +86,14 @@ public class StorageAutoConfiguration {
             throw new IllegalStateException("storage.bucket é obrigatório quando storage.provider está definido");
         }
         return properties.bucket();
+    }
+
+    static Path requireFilesystemRoot(StorageProperties properties) {
+        Path root = properties.filesystem().root();
+        if (root == null) {
+            throw new IllegalStateException("storage.filesystem.root é obrigatório quando storage.provider=filesystem");
+        }
+        return root;
     }
 
     @Configuration(proxyBeanMethods = false)
@@ -280,6 +290,31 @@ public class StorageAutoConfiguration {
         @Conditional(SingleBucket.class)
         ObjectStorage ociObjectStorage(BucketStorageFactory ociBucketStorageFactory, StorageProperties properties) {
             return ociBucketStorageFactory.create(requireBucket(properties));
+        }
+    }
+
+    /**
+     * Sem SDK nem client: cada bucket vira a subpasta {@code <root>/<bucket>}, criada sob
+     * demanda no primeiro {@code put}. Útil para desenvolvimento local e testes de integração
+     * sem depender de um provedor de nuvem ou emulador.
+     */
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnClass(FileSystemObjectStorage.class)
+    @ConditionalOnProperty(prefix = PREFIX, name = "provider", havingValue = "filesystem")
+    static class FilesystemStorageConfiguration {
+
+        @Bean
+        BucketStorageFactory filesystemBucketStorageFactory(StorageProperties properties) {
+            Path root = requireFilesystemRoot(properties);
+            return bucket -> new FileSystemObjectStorage(root.resolve(bucket));
+        }
+
+        @Bean
+        @ConditionalOnMissingBean(ObjectStorage.class)
+        @Conditional(SingleBucket.class)
+        ObjectStorage filesystemObjectStorage(BucketStorageFactory filesystemBucketStorageFactory,
+                                              StorageProperties properties) {
+            return filesystemBucketStorageFactory.create(requireBucket(properties));
         }
     }
 

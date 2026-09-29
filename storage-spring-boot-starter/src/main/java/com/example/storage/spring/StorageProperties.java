@@ -4,6 +4,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.boot.context.properties.bind.DefaultValue;
 
 import java.net.URI;
+import java.nio.file.Path;
 import java.util.Map;
 
 /**
@@ -39,9 +40,10 @@ public record StorageProperties(Provider provider,
                                 @DefaultValue S3 s3,
                                 @DefaultValue Gcs gcs,
                                 @DefaultValue Azure azure,
-                                @DefaultValue Oci oci) {
+                                @DefaultValue Oci oci,
+                                @DefaultValue Filesystem filesystem) {
 
-    public enum Provider { S3, GCS, AZURE, OCI }
+    public enum Provider { S3, GCS, AZURE, OCI, FILESYSTEM }
 
     public StorageProperties {
         buckets = buckets == null ? Map.of() : Map.copyOf(buckets);
@@ -100,5 +102,14 @@ public record StorageProperties(Provider provider,
      * @param namespace  sem valor, é consultado na API na inicialização
      */
     public record Oci(String configFile, @DefaultValue("DEFAULT") String profile, String namespace) {
+    }
+
+    /**
+     * Cada bucket ({@code storage.bucket}/{@code storage.buckets}) vira uma subpasta de
+     * {@code root}, criada sob demanda no primeiro {@code put}.
+     *
+     * @param root diretório base no filesystem local; obrigatório com {@code provider: filesystem}
+     */
+    public record Filesystem(Path root) {
     }
 }
