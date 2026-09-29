@@ -4,6 +4,7 @@ import com.azure.storage.blob.BlobContainerClient;
 import com.azure.storage.blob.BlobServiceClient;
 import com.example.storage.ObjectStorage;
 import com.example.storage.azure.AzureBlobObjectStorage;
+import com.example.storage.filesystem.FileSystemObjectStorage;
 import com.example.storage.gcs.GcsObjectStorage;
 import com.example.storage.memory.InMemoryObjectStorage;
 import com.example.storage.oci.OciObjectStorage;
@@ -12,6 +13,7 @@ import com.google.cloud.NoCredentials;
 import com.google.cloud.storage.HttpStorageOptions;
 import com.oracle.bmc.objectstorage.responses.GetNamespaceResponse;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.test.context.FilteredClassLoader;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
@@ -25,6 +27,9 @@ import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.presigner.S3Presigner;
 
 import java.net.URI;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Duration;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -36,6 +41,9 @@ class StorageAutoConfigurationTest {
 
     private final ApplicationContextRunner runner = new ApplicationContextRunner()
             .withConfiguration(AutoConfigurations.of(StorageAutoConfiguration.class));
+
+    @TempDir
+    Path tempDir;
 
     private static final String[] MINIO = {
             "storage.provider=s3", "storage.bucket=reports",
@@ -271,5 +279,48 @@ class StorageAutoConfigurationTest {
                     assertThat(context).hasSingleBean(OciObjectStorage.class);
                     verify(client, never()).getNamespace(any());
                 });
+    }
+
+    @Test
+    void filesystemCriaStorageNaSubpastaDoRoot() {
+        runner.withPropertyValues("storage.provider=filesystem", "storage.bucket=reports",
+                "storage.filesystem.root=" + tempDir).run(context -> {
+            ObjectStorage storage = context.getBean(ObjectStorage.class);
+            assertThat(storage).isInstanceOf(FileSystemObjectStorage.class);
+
+            storage.put("a.txt", "conteudo".getBytes(StandardCharsets.UTF_8), com.example.storage.PutOptions.of("text/plain"));
+
+            assertThat(Files.readString(tempDir.resolve("reports/a.txt"), StandardCharsets.UTF_8)).isEqualTo("conteudo");
+        });
+    }
+
+    @Test
+    void filesystemSemRootFalhaNaInicializacao() {
+        runner.withPropertyValues("storage.provider=filesystem", "storage.bucket=reports").run(context ->
+                assertThat(context).hasFailed().getFailure().hasRootCauseMessage(
+                        "storage.filesystem.root é obrigatório quando storage.provider=filesystem"));
+    }
+
+    @Test
+    void filesystemBucketsCriaUmaSubpastaPorEntrada() {
+        runner.withPropertyValues("storage.provider=filesystem", "storage.filesystem.root=" + tempDir,
+                "storage.buckets.reports=oobj-reports", "storage.buckets.artifacts=oobj-artifacts").run(context -> {
+            assertThat(context).hasNotFailed().doesNotHaveBean("filesystemObjectStorage");
+            assertThat(context.getBeansOfType(ObjectStorage.class))
+                    .containsOnlyKeys("reportsObjectStorage", "artifactsObjectStorage");
+
+            context.getBean("artifactsObjectStorage", ObjectStorage.class)
+                    .put("a.txt", new byte[0], com.example.storage.PutOptions.of("text/plain"));
+
+            assertThat(Files.exists(tempDir.resolve("oobj-artifacts/a.txt"))).isTrue();
+        });
+    }
+
+    @Test
+    void semAdapterFilesystemNoClasspathNaoCriaStorage() {
+        runner.withPropertyValues("storage.provider=filesystem", "storage.bucket=reports",
+                        "storage.filesystem.root=" + tempDir)
+                .withClassLoader(new FilteredClassLoader(FileSystemObjectStorage.class))
+                .run(context -> assertThat(context).doesNotHaveBean(ObjectStorage.class));
     }
 }

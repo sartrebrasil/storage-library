@@ -18,6 +18,7 @@
     <module>storage-gcs</module>
     <module>storage-azure</module>
     <module>storage-oci</module>
+    <module>storage-filesystem</module>
     <module>storage-spring-boot-starter</module>
   </modules>
 
