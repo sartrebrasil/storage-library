@@ -477,4 +477,31 @@ public abstract class ObjectStorageContract {
         assertEquals("text/plain", info.metadata().contentType());
         assertEquals(Map.of("tenant", "t1"), info.metadata().userMetadata());
     }
+
+    /** {@code false} quando a URL não sobrescreve {@code Content-Disposition} (ex.: OCI, filesystem, SFTP). */
+    protected boolean supportsPresignDownloadName() {
+        return supportsHttpPresign();
+    }
+
+    @Test
+    void presignGetComNomeDeDownloadRespondeContentDisposition() throws Exception {
+        assumeTrue(supportsPresignDownloadName(), "storage sem override de Content-Disposition na URL");
+        String key = key("objeto-com-nome-interno.bin");
+        storage().put(key, bytes("baixe-me"), PutOptions.of("text/csv"));
+
+        URI url = storage().presignGet(key, Duration.ofMinutes(5), "report-1.csv");
+        HttpResponse<byte[]> response = HTTP.send(HttpRequest.newBuilder(url).GET().build(),
+                HttpResponse.BodyHandlers.ofByteArray());
+
+        assertEquals(200, response.statusCode(), () -> new String(response.body(), StandardCharsets.UTF_8));
+        assertEquals("attachment; filename=\"report-1.csv\"",
+                response.headers().firstValue("Content-Disposition").orElse(null));
+        assertArrayEquals(bytes("baixe-me"), response.body());
+    }
+
+    @Test
+    void presignGetComNomeDeDownloadInvalidoFalhaAntesDeAssinar() {
+        assertThrows(IllegalArgumentException.class,
+                () -> storage().presignGet(key("k"), Duration.ofMinutes(5), "a\"b.csv"));
+    }
 }
