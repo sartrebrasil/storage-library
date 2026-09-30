@@ -3,6 +3,7 @@ package com.example.storage.s3;
 import com.example.storage.MultipartSession;
 import com.example.storage.StorageException;
 import com.example.storage.UploadedPart;
+import software.amazon.awssdk.core.SdkPojo;
 import software.amazon.awssdk.core.exception.SdkException;
 import software.amazon.awssdk.core.sync.RequestBody;
 import software.amazon.awssdk.services.s3.S3Client;
@@ -63,7 +64,7 @@ final class S3MultipartSession implements MultipartSession {
 
         try {
             UploadPartResponse response = s3.uploadPart(request, body);
-            return new UploadedPart(partNumber, response.eTag(), checksum == null ? null : response.checksumCRC32());
+            return new UploadedPart(partNumber, response.eTag(), checksumOf(response));
         } catch (SdkException e) {
             throw new StorageException("Falha ao enviar parte " + partNumber + " de " + key, e);
         }
@@ -73,10 +74,9 @@ final class S3MultipartSession implements MultipartSession {
     public void complete(List<UploadedPart> parts) {
         List<CompletedPart> completed = parts.stream()
                 .sorted(Comparator.comparingInt(UploadedPart::partNumber))
-                .map(p -> CompletedPart.builder()
+                .map(p -> withChecksum(CompletedPart.builder()
                         .partNumber(p.partNumber())
-                        .eTag(p.etag())
-                        .checksumCRC32(p.checksum())
+                        .eTag(p.etag()), p.checksum())
                         .build())
                 .toList();
         try {
@@ -107,7 +107,7 @@ final class S3MultipartSession implements MultipartSession {
             // o paginator é lazy: as páginas são buscadas no toList(), dentro do try
             return s3.listPartsPaginator(b -> b.bucket(bucket).key(key).uploadId(uploadId))
                     .parts().stream()
-                    .map(p -> new UploadedPart(p.partNumber(), p.eTag(), p.checksumCRC32()))
+                    .map(p -> new UploadedPart(p.partNumber(), p.eTag(), checksumOf(p)))
                     .toList();
         } catch (NoSuchUploadException alreadyGone) {
             return List.of();   // concluído/abortado
@@ -131,12 +131,45 @@ final class S3MultipartSession implements MultipartSession {
                 if (page == null) {
                     return List.of();   // objeto não veio de multipart
                 }
-                page.parts().forEach(p -> result.add(new UploadedPart(p.partNumber(), null, p.checksumCRC32())));
+                page.parts().forEach(p -> result.add(new UploadedPart(p.partNumber(), null, checksumOf(p))));
                 marker = page.nextPartNumberMarker();
             } while (Boolean.TRUE.equals(page.isTruncated()));
             return result;
         } catch (SdkException e) {
             throw new StorageException("Falha ao listar partes concluídas de " + key, e);
         }
+    }
+
+    /**
+     * Checksum do algoritmo pedido. UploadPartResponse, Part e ObjectPart nomeiam o campo
+     * igual: "Checksum" + valor do algoritmo (ChecksumCRC32, ChecksumSHA256...).
+     */
+    private String checksumOf(SdkPojo pojo) {
+        if (checksum == null) {
+            return null;
+        }
+        String field = "Checksum" + checksum;
+        return pojo.sdkFields().stream()
+                .filter(f -> f.memberName().equals(field))
+                .findFirst()
+                .map(f -> (String) f.getValueOrDefault(pojo))
+                .orElse(null);
+    }
+
+    private CompletedPart.Builder withChecksum(CompletedPart.Builder part, String value) {
+        return switch (checksum) {
+            case null -> part;
+            case CRC32 -> part.checksumCRC32(value);
+            case CRC32_C -> part.checksumCRC32C(value);
+            case CRC64_NVME -> part.checksumCRC64NVME(value);
+            case SHA1 -> part.checksumSHA1(value);
+            case SHA256 -> part.checksumSHA256(value);
+            case SHA512 -> part.checksumSHA512(value);
+            case MD5 -> part.checksumMD5(value);
+            case XXHASH64 -> part.checksumXXHASH64(value);
+            case XXHASH3 -> part.checksumXXHASH3(value);
+            case XXHASH128 -> part.checksumXXHASH128(value);
+            case UNKNOWN_TO_SDK_VERSION -> throw new IllegalStateException("Checksum desconhecido: " + checksum);
+        };
     }
 }

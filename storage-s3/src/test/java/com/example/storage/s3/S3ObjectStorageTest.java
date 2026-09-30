@@ -143,6 +143,25 @@ class S3ObjectStorageTest {
     }
 
     @Test
+    void checksumSha256LidoDaParteEEnviadoNaConclusao() {
+        S3ObjectStorage storage = new S3ObjectStorage(s3, mock(S3Presigner.class), "bucket", S3ObjectStorage.Checksum.SHA256);
+        when(s3.uploadPart(any(UploadPartRequest.class), any(RequestBody.class)))
+                .thenReturn(UploadPartResponse.builder().eTag("e1").checksumCRC32("errado").checksumSHA256("s1").build());
+
+        MultipartSession sha256 = storage.initiateMultipart("k", ObjectMetadata.of("text/csv"));
+        UploadedPart part = sha256.uploadPart(1, new byte[3], 3);
+        sha256.complete(List.of(part));
+
+        assertEquals("s1", part.checksum());
+        ArgumentCaptor<CompleteMultipartUploadRequest> captor =
+                ArgumentCaptor.forClass(CompleteMultipartUploadRequest.class);
+        verify(s3).completeMultipartUpload(captor.capture());
+        CompletedPart completed = captor.getValue().multipartUpload().parts().get(0);
+        assertEquals("s1", completed.checksumSHA256());
+        assertNull(completed.checksumCRC32());
+    }
+
+    @Test
     void abortIgnoraUploadInexistente() {
         when(s3.abortMultipartUpload(any(AbortMultipartUploadRequest.class)))
                 .thenThrow(NoSuchUploadException.builder().message("gone").build());
