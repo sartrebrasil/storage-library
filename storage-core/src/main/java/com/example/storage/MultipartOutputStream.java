@@ -41,16 +41,10 @@ public final class MultipartOutputStream extends OutputStream {
 
     private enum State { OPEN, COMMITTED, ABORTED }
 
-    /** Escreve o conteúdo do objeto. Pode fechar o stream recebido; o upload não depende disso. */
-    @FunctionalInterface
-    public interface Body<T> {
-        T writeTo(OutputStream out) throws IOException;
-    }
-
     /**
      * Upload concluído.
      *
-     * @param value     o que {@link Body#writeTo} devolveu
+     * @param value     o que {@link ObjectBody#writeTo} devolveu
      * @param digestHex digest dos bytes enviados, ou {@code null} sem {@link MultipartConfig#withDigest}
      */
     public record Result<T>(T value, String key, String uploadId, long bytesWritten, int partCount,
@@ -80,15 +74,11 @@ public final class MultipartOutputStream extends OutputStream {
      *
      * <pre>{@code
      * Result<Long> result = MultipartOutputStream.upload(storage, key, metadata, config.withDigest("SHA-256"),
-     *         out -> {
-     *             try (GZIPOutputStream gzip = new GZIPOutputStream(out)) {
-     *                 return writeReport(gzip);
-     *             }
-     *         });
+     *         ObjectBody.gzipped(out -> writeReport(out)));
      * }</pre>
      */
     public static <T> Result<T> upload(ObjectStorage storage, String key, ObjectMetadata metadata,
-                                       MultipartConfig config, Body<T> body) throws IOException {
+                                       MultipartConfig config, ObjectBody<T> body) throws IOException {
         try (MultipartOutputStream out = open(storage, key, metadata, config)) {
             T value = body.writeTo(out.nonClosing());
             out.commit();
