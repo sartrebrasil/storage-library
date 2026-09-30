@@ -8,6 +8,7 @@ import com.example.storage.UploadedPart;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.file.Files;
+import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
@@ -86,6 +87,21 @@ final class FileSystemMultipartSession implements MultipartSession {
     @Override
     public void abort() {
         deleteUploadDir();
+    }
+
+    @Override
+    public List<UploadedPart> listParts() {
+        try (var files = Files.list(uploadDir)) {
+            return files.map(p -> p.getFileName().toString())
+                    .filter(name -> name.startsWith("part-"))
+                    .map(name -> new UploadedPart(Integer.parseInt(name.substring("part-".length())), name, null))
+                    .sorted(Comparator.comparingInt(UploadedPart::partNumber))
+                    .toList();
+        } catch (NoSuchFileException alreadyGone) {
+            return List.of();   // concluído/abortado
+        } catch (IOException e) {
+            throw new StorageException("Falha ao listar partes do upload de " + key, e);
+        }
     }
 
     private Path partPath(int partNumber) {

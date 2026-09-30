@@ -10,10 +10,13 @@ import com.google.cloud.storage.multipartupload.model.AbortMultipartUploadReques
 import com.google.cloud.storage.multipartupload.model.CompleteMultipartUploadRequest;
 import com.google.cloud.storage.multipartupload.model.CompletedMultipartUpload;
 import com.google.cloud.storage.multipartupload.model.CompletedPart;
+import com.google.cloud.storage.multipartupload.model.ListPartsRequest;
+import com.google.cloud.storage.multipartupload.model.ListPartsResponse;
 import com.google.cloud.storage.multipartupload.model.UploadPartRequest;
 import com.google.cloud.storage.multipartupload.model.UploadPartResponse;
 
 import java.nio.ByteBuffer;
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 
@@ -95,6 +98,31 @@ final class GcsMultipartSession implements MultipartSession {
             if (e.getCode() != NOT_FOUND) {   // 404: já abortado/concluído (idempotente)
                 throw new StorageException("Falha ao abortar upload de " + key, e);
             }
+        }
+    }
+
+    @Override
+    public List<UploadedPart> listParts() {
+        List<UploadedPart> result = new ArrayList<>();
+        Integer marker = null;
+        try {
+            ListPartsResponse page;
+            do {
+                page = client.listParts(ListPartsRequest.builder()
+                        .bucket(bucket)
+                        .key(key)
+                        .uploadId(uploadId)
+                        .partNumberMarker(marker)
+                        .build());
+                page.parts().forEach(p -> result.add(new UploadedPart(p.partNumber(), p.eTag(), null)));
+                marker = page.nextPartNumberMarker();
+            } while (page.truncated());
+            return result;
+        } catch (BaseServiceException e) {
+            if (e.getCode() == NOT_FOUND) {
+                return List.of();   // concluído/abortado
+            }
+            throw new StorageException("Falha ao listar partes do upload de " + key, e);
         }
     }
 }

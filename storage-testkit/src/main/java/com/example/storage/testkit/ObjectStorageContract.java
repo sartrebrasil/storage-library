@@ -5,6 +5,7 @@ import com.example.storage.CommonPrefix;
 import com.example.storage.ListEntry;
 import com.example.storage.MultipartConfig;
 import com.example.storage.MultipartOutputStream;
+import com.example.storage.MultipartSession;
 import com.example.storage.ObjectContent;
 import com.example.storage.ObjectInfo;
 import com.example.storage.ObjectMetadata;
@@ -17,6 +18,7 @@ import com.example.storage.PresignedRequest;
 import com.example.storage.PutOptions;
 import com.example.storage.RangeNotSatisfiableException;
 import com.example.storage.StorageException;
+import com.example.storage.UploadedPart;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -415,6 +417,21 @@ public abstract class ObjectStorageContract {
         }
 
         assertArrayEquals(data, read(key, ByteRange.all()));
+    }
+
+    @Test
+    void multipartListaPartesEmAndamento() {
+        String key = key("multipart-listagem.bin");
+        MultipartSession session = storage().initiateMultipart(key, ObjectMetadata.of("application/octet-stream"));
+        List<UploadedPart> uploaded = List.of(
+                session.uploadPart(1, new byte[MultipartConfig.MIN_PART_SIZE], MultipartConfig.MIN_PART_SIZE),
+                session.uploadPart(2, new byte[10], 10));
+
+        assertEquals(List.of(1, 2), session.listParts().stream().map(UploadedPart::partNumber).toList());
+
+        session.complete(uploaded);
+
+        assertEquals(List.of(), session.listParts());
     }
 
     @Test

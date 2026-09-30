@@ -6,14 +6,17 @@ import com.example.storage.UploadedPart;
 import com.oracle.bmc.model.BmcException;
 import com.oracle.bmc.objectstorage.model.CommitMultipartUploadDetails;
 import com.oracle.bmc.objectstorage.model.CommitMultipartUploadPartDetails;
+import com.oracle.bmc.objectstorage.model.MultipartUploadPartSummary;
 import com.oracle.bmc.objectstorage.requests.AbortMultipartUploadRequest;
 import com.oracle.bmc.objectstorage.requests.CommitMultipartUploadRequest;
+import com.oracle.bmc.objectstorage.requests.ListMultipartUploadPartsRequest;
 import com.oracle.bmc.objectstorage.requests.UploadPartRequest;
 import com.oracle.bmc.objectstorage.responses.UploadPartResponse;
 
 import java.io.ByteArrayInputStream;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Comparator;
 import java.util.List;
@@ -107,6 +110,28 @@ final class OciMultipartSession implements MultipartSession {
             if (e.getStatusCode() != NOT_FOUND) {   // 404: já abortado/concluído (idempotente)
                 throw new StorageException("Falha ao abortar upload de " + key, e);
             }
+        }
+    }
+
+    @Override
+    public List<UploadedPart> listParts() {
+        ListMultipartUploadPartsRequest request = ListMultipartUploadPartsRequest.builder()
+                .namespaceName(namespace)
+                .bucketName(bucket)
+                .objectName(key)
+                .uploadId(uploadId)
+                .build();
+        List<UploadedPart> result = new ArrayList<>();
+        try {
+            for (MultipartUploadPartSummary p : client.getPaginators().listMultipartUploadPartsRecordIterator(request)) {
+                result.add(new UploadedPart(p.getPartNumber(), p.getEtag(), p.getMd5()));
+            }
+            return result;
+        } catch (BmcException e) {
+            if (e.getStatusCode() == NOT_FOUND) {
+                return List.of();   // concluído/abortado
+            }
+            throw new StorageException("Falha ao listar partes do upload de " + key, e);
         }
     }
 

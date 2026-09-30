@@ -208,5 +208,15 @@ public final class InMemoryObjectStorage implements ObjectStorage {
             parts.clear();
             activeUploads.remove(uploadId);
         }
+
+        @Override
+        public List<UploadedPart> listParts() {
+            if (!activeUploads.contains(uploadId)) {
+                return List.of();   // concluído/abortado
+            }
+            return parts.keySet().stream().sorted()
+                    .map(n -> new UploadedPart(n, "etag-" + n, null))
+                    .toList();
+        }
     }
 }

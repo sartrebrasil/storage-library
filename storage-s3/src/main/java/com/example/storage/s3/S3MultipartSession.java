@@ -8,11 +8,14 @@ import software.amazon.awssdk.core.sync.RequestBody;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.model.ChecksumAlgorithm;
 import software.amazon.awssdk.services.s3.model.CompletedPart;
+import software.amazon.awssdk.services.s3.model.GetObjectAttributesParts;
 import software.amazon.awssdk.services.s3.model.NoSuchUploadException;
+import software.amazon.awssdk.services.s3.model.ObjectAttributes;
 import software.amazon.awssdk.services.s3.model.UploadPartRequest;
 import software.amazon.awssdk.services.s3.model.UploadPartResponse;
 
 import java.io.ByteArrayInputStream;
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 
@@ -95,6 +98,45 @@ final class S3MultipartSession implements MultipartSession {
             // idempotente: já abortado/concluído
         } catch (SdkException e) {
             throw new StorageException("Falha ao abortar upload de " + key, e);
+        }
+    }
+
+    @Override
+    public List<UploadedPart> listParts() {
+        try {
+            // o paginator é lazy: as páginas são buscadas no toList(), dentro do try
+            return s3.listPartsPaginator(b -> b.bucket(bucket).key(key).uploadId(uploadId))
+                    .parts().stream()
+                    .map(p -> new UploadedPart(p.partNumber(), p.eTag(), p.checksumCRC32()))
+                    .toList();
+        } catch (NoSuchUploadException alreadyGone) {
+            return List.of();   // concluído/abortado
+        } catch (SdkException e) {
+            throw new StorageException("Falha ao listar partes do upload de " + key, e);
+        }
+    }
+
+    /** A S3 só devolve a lista de partes se o upload usou checksum; sem ele, a lista vem vazia. */
+    @Override
+    public List<UploadedPart> listCompletedParts() {
+        List<UploadedPart> result = new ArrayList<>();
+        Integer marker = null;
+        try {
+            GetObjectAttributesParts page;
+            do {
+                Integer current = marker;
+                page = s3.getObjectAttributes(b -> b.bucket(bucket).key(key)
+                        .objectAttributes(ObjectAttributes.OBJECT_PARTS)
+                        .partNumberMarker(current)).objectParts();
+                if (page == null) {
+                    return List.of();   // objeto não veio de multipart
+                }
+                page.parts().forEach(p -> result.add(new UploadedPart(p.partNumber(), null, p.checksumCRC32())));
+                marker = page.nextPartNumberMarker();
+            } while (Boolean.TRUE.equals(page.isTruncated()));
+            return result;
+        } catch (SdkException e) {
+            throw new StorageException("Falha ao listar partes concluídas de " + key, e);
         }
     }
 }
