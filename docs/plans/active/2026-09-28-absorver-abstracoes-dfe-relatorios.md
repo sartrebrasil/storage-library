@@ -63,7 +63,7 @@ outro plano, no repositório dele.
 | G4 | Leitura: `Range` HTTP, conteúdo com metadados, 416 | L4, L5, L6 | G0 | Concluída em 28/09/2026 |
 | G5 | Health check | L7 | G0 | Concluída em 28/09/2026 |
 | G6 | Lacunas da segunda análise: credencial vazia, tipo da exceção no multipart, pool HTTP, métricas, nome na URL de download | N1 a N6 | — | N1 e N2 concluídos em 28/09/2026; N3 e N5 em rascunho; N4 adiado; N6 sem mudança |
-| G7 | Pipeline de artefato: `ObjectBody` com gzip, TTL proporcional, `Range` tolerante, `416` com tamanho, módulo `storage-spring-web` | P1 a P7 | N5 (MR 2) | MR 1 (P1 a P4) implementado em 30/09/2026, branch `feat/g7-artifact-pipeline-core`; MRs 2 a 4 pendentes |
+| G7 | Pipeline de artefato: `ObjectBody` com gzip, TTL proporcional, `Range` tolerante, `416` com tamanho, módulo `storage-spring-web` | P1 a P7 | N5 (MR 2) | MRs 1 (P1 a P4) e 2 (P5) mergeados em 30/09/2026; MR 3 (P6) em `feat/g7-storage-spring-web`; MR 4 (consumidor) pendente |
 
 G2 a G5 são independentes entre si e podem virar MRs separados. G1 só bloqueia o
 consumo pelo CI, não o desenvolvimento das outras fases.
@@ -625,6 +625,14 @@ Itens:
 | P7 | Consumidor: apaga `ArtifactBody`, `encoderFor`, `ArtifactResource`, `ReleaseOnCloseInputStream`, `clampExpiresIn`; `416` com `Content-Range: bytes */N` | consumidor | 4 |
 
 Os MRs 1 e 2 são independentes; o 3 depende do 1; o 4 depende dos três.
+
+Registro do MR 3 (30/09/2026, branch `feat/g7-storage-spring-web`): módulo `storage-spring-web` com
+`StreamLimiter` (+ `Permit` idempotente, `available()`), `Attachment` e `ObjectResponses`
+(`attachment` com e sem permit, `unsatisfiedContentRange`). `Content-Disposition` sai pelo
+`ContentDisposition` do Spring: nome ASCII só em `filename="…"` (sem o `=?UTF-8?Q?` que o builder
+gera quando recebe charset), nome com acento também em `filename*`. Versão de `spring-web` 6.2.19,
+a do Boot 3.5 do starter. Testes: 9 em `ObjectResponsesTest`, 4 em `StreamLimiterTest`. Antes, um
+commit corrige o `CoreModelTest` que o merge de #1 e #2 deixou sem compilar.
 
 Registro do MR 1 (30/09/2026): `ObjectBody` (interface própria; `MultipartOutputStream.Body` removido),
 `PresignTtl`, `ByteRange.parseHttpOrAll`, `RangeNotSatisfiableException.totalSize()`/`withTotalSize`.

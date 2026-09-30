@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>com.example</groupId>
+    <artifactId>storage-parent</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+  </parent>
+  <artifactId>storage-spring-web</artifactId>
+  <name>storage-spring-web</name>
+  <description>Download de objetos por Spring MVC: 200/206/416, Content-Disposition e limite de streams</description>
+
+  <properties>
+    <module.name>com.example.storage.web</module.name>
+    <!-- A do Spring Boot 3.5 do starter. A aplicação usa a do próprio BOM do Boot. -->
+    <spring-framework.version>6.2.19</spring-framework.version>
+  </properties>
+
+  <dependencies>
+    <dependency>
+      <groupId>com.example</groupId>
+      <artifactId>storage-core</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework</groupId>
+      <artifactId>spring-web</artifactId>
+      <version>${spring-framework.version}</version>
+    </dependency>
+
+    <dependency>
+      <groupId>com.example</groupId>
+      <artifactId>storage-testkit</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+</project>
