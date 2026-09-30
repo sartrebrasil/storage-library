@@ -90,6 +90,23 @@ public record ByteRange(long offset, long length) {
         return of(start, end - start + 1);
     }
 
+    /**
+     * Como {@link #parseHttp}, mas o que ele rejeitaria vira {@link #all()}: cabeçalho ausente, malformado,
+     * outra unidade ou várias faixas. É o que a RFC 9110 §14.2 manda um servidor fazer com um {@code Range}
+     * que não entende: ignorar e responder o objeto inteiro. Faixa fora do objeto não é malformada, e
+     * continua falhando na leitura com {@link RangeNotSatisfiableException}.
+     */
+    public static ByteRange parseHttpOrAll(String header) {
+        if (header == null) {
+            return ALL;
+        }
+        try {
+            return parseHttp(header);
+        } catch (IllegalArgumentException e) {
+            return ALL;
+        }
+    }
+
     public boolean isAll() {
         return offset == 0 && length == -1;
     }
@@ -130,7 +147,8 @@ public record ByteRange(long offset, long length) {
             return this;
         }
         if (size <= 0 || (!isSuffix() && offset >= size)) {
-            throw new RangeNotSatisfiableException(httpValue() + " fora de um objeto de " + size + " bytes", null);
+            throw new RangeNotSatisfiableException(httpValue() + " fora de um objeto de " + size + " bytes", null,
+                    Math.max(size, 0));
         }
         if (isSuffix()) {
             long start = Math.max(0, size - length);
