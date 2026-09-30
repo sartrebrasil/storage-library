@@ -227,4 +227,16 @@ class S3ObjectStorageTest {
                 complete.getValue().multipartUpload().parts().stream().map(CompletedPart::eTag).toList());
         verify(s3, never()).copyObject(any(CopyObjectRequest.class));
     }
+
+    @Test
+    void todoChecksumResolveNoSdkPeloNome() {
+        for (S3ObjectStorage.Checksum checksum : S3ObjectStorage.Checksum.values()) {
+            if (checksum == S3ObjectStorage.Checksum.NONE) {
+                assertNull(checksum.algorithm());
+            } else {
+                assertNotEquals(software.amazon.awssdk.services.s3.model.ChecksumAlgorithm.UNKNOWN_TO_SDK_VERSION,
+                        checksum.algorithm(), checksum::name);
+            }
+        }
+    }
 }
