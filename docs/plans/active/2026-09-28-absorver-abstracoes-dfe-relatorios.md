@@ -1,6 +1,6 @@
 # Plano: absorver as abstrações exigidas pelo oobj-ms-dfe-relatorios
 
-- **Status:** ativo; G0, G2, G3, G4 e G5 concluídas; G6 parcial (N1 e N2 feitos); falta o job de CI de G1
+- **Status:** ativo; G0, G2, G3, G4 e G5 concluídas; G6 parcial (N1 e N2 feitos); G7 em andamento (MR 1); falta o job de CI de G1
 - **Criado em:** 28/09/2026
 - **Consumidor:** `oobj-ms-dfe-relatorios`, módulos `reports-api` e `reports-worker` (OOBJ-918)
 - **Origem:** comparativo publicado em https://claude.ai/artifact/NW7QYAf4hkC42E6eK55Avb.
@@ -63,6 +63,7 @@ outro plano, no repositório dele.
 | G4 | Leitura: `Range` HTTP, conteúdo com metadados, 416 | L4, L5, L6 | G0 | Concluída em 28/09/2026 |
 | G5 | Health check | L7 | G0 | Concluída em 28/09/2026 |
 | G6 | Lacunas da segunda análise: credencial vazia, tipo da exceção no multipart, pool HTTP, métricas, nome na URL de download | N1 a N6 | — | N1 e N2 concluídos em 28/09/2026; N3 e N5 em rascunho; N4 adiado; N6 sem mudança |
+| G7 | Pipeline de artefato: `ObjectBody` com gzip, TTL proporcional, `Range` tolerante, `416` com tamanho, módulo `storage-spring-web` | P1 a P7 | N5 (MR 2) | MR 1 (P1 a P4) implementado em 30/09/2026, branch `feat/g7-artifact-pipeline-core`; MRs 2 a 4 pendentes |
 
 G2 a G5 são independentes entre si e podem virar MRs separados. G1 só bloqueia o
 consumo pelo CI, não o desenvolvimento das outras fases.
@@ -586,6 +587,55 @@ exigir 206, a separação custa um terceiro estado em `ByteRange` ("faixa desde 
 para `resolve`, `isAll` e os quatro adapters.
 
 ---
+
+### G7: pipeline de artefato (item 1 do ADR-001 do consumidor)
+
+Origem: `docs/adr/001-extracao-seletiva-do-modulo-reports-para-bibliotecas.md` no
+`oobj-ms-dfe-relatorios`. O upload do consumidor já passa por `MultipartOutputStream.upload`; o que
+sobra de genérico lá é o codec gzip, o TTL da URL de download e o caminho de download por stream
+(`StreamDispositionHandler`, `ArtifactResource`, `StreamConcurrencyGuard`).
+
+Decisões (30/09/2026):
+
+| # | Pergunta | Decisão |
+|---|---|---|
+| E1 | Onde fica o código web | Módulo novo `storage-spring-web`, só `spring-web`, sem autoconfigure. O starter não passa a trazer `spring-web`. |
+| E2 | MVC e WebFlux | Só MVC (`ResponseEntity<Resource>`). WebFlux quando alguém pedir. |
+| E3 | Handler de `416` | A lib não registra `@ControllerAdvice`. Entrega o valor do `Content-Range` e o consumidor mapeia. |
+| E4 | Gzip | Na lib, como decorador de corpo (`ObjectBody.gzipped`), não como flag de `MultipartConfig`. É o formato do arquivo, não `Content-Encoding`. |
+| E5 | Tipo do corpo | `MultipartOutputStream.Body` vira a interface própria `ObjectBody<T>`; o consumidor apaga `ArtifactBody` e usa `ObjectBody<Long>`. Quebra de API aceita: 0.x e um consumidor. |
+| E6 | TTL proporcional | Na lib, `PresignTtl`: `size / bytesPerSecond` limitado a `[min, max]`. |
+| E7 | Tamanho no `416` | `ObjectResponses.attachment` recebe o `ObjectInfo` do `head`; a `RangeNotSatisfiableException` ganha `totalSize()` opcional. |
+
+Itens:
+
+| # | Entrega | Módulo | MR |
+|---|---|---|---|
+| P1 | `ObjectBody<T>` com `gzipped(body)` (buffer de 64 KiB); `upload(...)` passa a recebê-lo | core | 1 |
+| P2 | `PresignTtl(assumedBytesPerSecond, min, max).forSize(size)`, truncado em segundos | core | 1 |
+| P3 | `ByteRange.parseHttpOrAll(header)`: `null`, malformado ou várias faixas viram `all()` (RFC 9110 §14.2) | core | 1 |
+| P4 | `RangeNotSatisfiableException.totalSize()` (`OptionalLong`) e `withTotalSize(size)` | core | 1 |
+| P5 | N5: `presignGet(key, ttl, downloadName)` nos adapters | core + adapters | 2 |
+| P6 | `StreamLimiter` com `Permit` idempotente; `Attachment`; `ObjectResponses.attachment(storage, head, rangeHeader, attachment, permit)` e `unsatisfiedContentRange(e)` | `storage-spring-web` | 3 |
+| P7 | Consumidor: apaga `ArtifactBody`, `encoderFor`, `ArtifactResource`, `ReleaseOnCloseInputStream`, `clampExpiresIn`; `416` com `Content-Range: bytes */N` | consumidor | 4 |
+
+Os MRs 1 e 2 são independentes; o 3 depende do 1; o 4 depende dos três.
+
+Registro do MR 1 (30/09/2026): `ObjectBody` (interface própria; `MultipartOutputStream.Body` removido),
+`PresignTtl`, `ByteRange.parseHttpOrAll`, `RangeNotSatisfiableException.totalSize()`/`withTotalSize`.
+`ByteRange.resolve` e `ObjectContent.fromHttp` já preenchem o tamanho, porque o conhecem. Testes: 5
+novos em `CoreModelTest`, 1 novo e 1 migrado para `ObjectBody.gzipped` em `MultipartOutputStreamTest`.
+
+Testes:
+
+- P1: o objeto descomprime para o original; digest e `bytesWritten` contam os bytes comprimidos;
+  exceção no corpo aborta.
+- P2: pequeno fica no `min`, grande no `max`, intermediário proporcional; validação do construtor.
+- P3: `null`, malformado e várias faixas viram `all()`; faixa válida igual a `parseHttp`.
+- P4: sem tamanho, `totalSize()` vazio; `withTotalSize` preserva mensagem e causa.
+- P6: `200`/`206` com headers; faixa malformada responde `200`; nome com aspas e acentos escapado
+  (RFC 6266, `ContentDisposition` do Spring); falha na leitura e `close()` do resource soltam o
+  permit; `close()` duplo solta uma vez; `416` com o tamanho do `head`. Contra `InMemoryObjectStorage`.
 
 ## Decisões
 
