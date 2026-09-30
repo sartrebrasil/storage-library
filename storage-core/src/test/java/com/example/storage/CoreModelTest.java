@@ -5,6 +5,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.InputStream;
+import java.time.Duration;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -114,5 +115,53 @@ class CoreModelTest {
     void nomeDeDownloadForaDoPortavelEhRejeitado(String name) {
         assertThrows(IllegalArgumentException.class, () -> ObjectMetadata.attachmentDisposition(name));
         assertThrows(IllegalArgumentException.class, () -> ObjectMetadata.empty().withDownloadName(name));
+    @ParameterizedTest
+    @ValueSource(strings = {"items=0-1", "bytes=0-1,5-6", "bytes=5-1", "bytes"})
+    void byteRangeTolerantIgnoraOQueNaoEntende(String header) {
+        assertEquals(ByteRange.all(), ByteRange.parseHttpOrAll(header));
+    }
+
+    @Test
+    void byteRangeTolerantLeOCabecalhoValido() {
+        assertEquals(ByteRange.all(), ByteRange.parseHttpOrAll(null));
+        assertEquals(ByteRange.parseHttp("bytes=10-19"), ByteRange.parseHttpOrAll("bytes=10-19"));
+        assertEquals(ByteRange.suffix(5), ByteRange.parseHttpOrAll("bytes=-5"));
+    }
+
+    @Test
+    void rangeNotSatisfiableCarregaOTamanhoQuandoConhecido() {
+        RangeNotSatisfiableException semTamanho = new RangeNotSatisfiableException("fora", null);
+        assertTrue(semTamanho.totalSize().isEmpty());
+
+        RangeNotSatisfiableException comTamanho = semTamanho.withTotalSize(100);
+        assertEquals(100, comTamanho.totalSize().orElseThrow());
+        assertEquals("fora", comTamanho.getMessage());
+        assertSame(semTamanho, comTamanho.getCause());
+        assertThrows(IllegalArgumentException.class, () -> semTamanho.withTotalSize(-1));
+
+        RangeNotSatisfiableException resolvida = assertThrows(RangeNotSatisfiableException.class,
+                () -> ByteRange.from(100).resolve(100));
+        assertEquals(100, resolvida.totalSize().orElseThrow(), "resolve conhece o tamanho");
+    }
+
+    @Test
+    void presignTtlProporcionalAoTamanhoDentroDosLimites() {
+        PresignTtl ttl = new PresignTtl(1_000, Duration.ofMinutes(1), Duration.ofMinutes(10));
+
+        assertEquals(Duration.ofMinutes(1), ttl.forSize(0));
+        assertEquals(Duration.ofMinutes(1), ttl.forSize(59_999));
+        assertEquals(Duration.ofSeconds(120), ttl.forSize(120_999), "truncado em segundos");
+        assertEquals(Duration.ofMinutes(10), ttl.forSize(10_000_000));
+        assertThrows(IllegalArgumentException.class, () -> ttl.forSize(-1));
+    }
+
+    @Test
+    void presignTtlValidaAConfiguracao() {
+        Duration minuto = Duration.ofMinutes(1);
+        assertThrows(IllegalArgumentException.class, () -> new PresignTtl(0, minuto, minuto));
+        assertThrows(IllegalArgumentException.class, () -> new PresignTtl(1, Duration.ofMillis(500), minuto));
+        assertThrows(IllegalArgumentException.class, () -> new PresignTtl(1, Duration.ofMinutes(2), minuto));
+        assertThrows(NullPointerException.class, () -> new PresignTtl(1, null, minuto));
+        assertDoesNotThrow(() -> new PresignTtl(1, minuto, minuto));
     }
 }
