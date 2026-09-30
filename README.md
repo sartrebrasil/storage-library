@@ -72,8 +72,8 @@ Instala os artefatos em `~/.m2`. Para usar em outro projeto:
 | Remoção | `delete(key)`, `deleteAll(keys)` | Idempotentes; `deleteAll` devolve as falhas. |
 | Cópia | `copy(source, target)` | Mesmo bucket; preserva metadata; bloqueia até concluir. |
 | Escrita condicional | `PutOptions.ifNotExists()`, `.ifVersionMatches(v)` | Falha com `PreconditionFailedException`. |
-| URL de download | `presignGet(key, ttl)` | |
 | URL de download com nome | `presignGet(key, ttl, downloadName)` | A resposta vem com `Content-Disposition: attachment; filename="…"`, qualquer que seja a chave. OCI, filesystem e SFTP lançam `UnsupportedOperationException`: grave o nome no upload com `ObjectMetadata.withDownloadName`. |
+| URL de download | `presignGet(key, ttl)` | `PresignTtl(bytesPorSegundo, min, max).forSize(tamanho)` calcula um TTL proporcional ao tamanho. |
 | URL de upload | `presignPut(key, ttl, options)` | Devolve método, URL e cabeçalhos que o cliente deve enviar. |
 | Acesso ao bucket | `checkAccess()` | Falha se o bucket não existe ou as credenciais não alcançam. Base do health check. |
 
@@ -170,13 +170,14 @@ o que recebem), faz `commit()` quando o corpo retorna e aborta em qualquer exce�
 MultipartConfig config = MultipartConfig.sequential(16 * MultipartConfig.MIB)
         .withMaxObjectBytes(maxBytes)
         .withDigest("SHA-256");
-MultipartOutputStream.Result<Long> result = MultipartOutputStream.upload(storage, key, metadata, config, out -> {
-    try (GZIPOutputStream gzip = new GZIPOutputStream(out)) {
-        return writeReport(gzip);   // o valor devolvido volta em result.value()
-    }
-});
+MultipartOutputStream.Result<Long> result = MultipartOutputStream.upload(storage, key, metadata, config,
+        ObjectBody.gzipped(out -> writeReport(out)));   // o valor devolvido volta em result.value()
 log.info("upload {} concluído: {} bytes, sha256={}", result.uploadId(), result.bytesWritten(), result.digestHex());
 ```
+
+O corpo é um `ObjectBody<T>`. `ObjectBody.gzipped(body)` grava o gzip do que `body` escreve, e
+digest e `bytesWritten` contam os bytes comprimidos. É o formato do arquivo (`.gz`): não grave
+`Content-Encoding: gzip` na metadata, ou o navegador descomprime ao baixar.
 
 Usando o stream direto (`open`/`commit`), entregue `out.nonClosing()` a quem fecha o stream:
 fechar sem `commit()` aborta.
@@ -184,19 +185,24 @@ fechar sem `commit()` aborta.
 ### Leitura por faixa
 
 `ByteRange.parseHttp` lê o cabeçalho `Range` (`bytes=a-b`, `bytes=a-`, `bytes=-n`; várias
-faixas não são suportadas) e `read` devolve o que a resposta precisa:
+faixas não são suportadas) e lança `IllegalArgumentException` no resto. `ByteRange.parseHttpOrAll`
+faz o que a RFC 9110 §14.2 pede de um servidor: cabeçalho ausente, malformado ou com várias faixas
+vira `ByteRange.all()`, e o objeto é servido inteiro. `read` devolve o que a resposta precisa:
 
 ```java
-ByteRange range = header == null ? ByteRange.all() : ByteRange.parseHttp(header);
-try (ObjectContent content = storage.read(key, range)) {
+try (ObjectContent content = storage.read(key, ByteRange.parseHttpOrAll(header))) {
     response.setStatus(content.isPartial() ? 206 : 200);
     response.setContentLengthLong(content.contentLength());
     content.contentRange().ifPresent(value -> response.setHeader("Content-Range", value));
     content.stream().transferTo(response.getOutputStream());
 } catch (RangeNotSatisfiableException e) {
     response.setStatus(416);
+    e.totalSize().ifPresent(size -> response.setHeader("Content-Range", "bytes */" + size));
 }
 ```
+
+`totalSize()` vem vazio quando o adapter não sabe o tamanho (o S3 não o devolve no erro). Quem já
+fez `head` completa com `e.withTotalSize(info.size())`.
 
 A faixa é cortada no fim do objeto, como no HTTP. `bytes=0-` equivale a `ByteRange.all()` e
 é servido inteiro, sem `206`. Num objeto vazio, qualquer faixa é `416`.

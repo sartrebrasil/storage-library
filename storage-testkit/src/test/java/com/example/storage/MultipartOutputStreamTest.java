@@ -216,12 +216,11 @@ class MultipartOutputStreamTest {
         byte[] text = "linha;valor\n".repeat(1_000).getBytes(StandardCharsets.UTF_8);
 
         MultipartOutputStream.Result<Integer> result = MultipartOutputStream.upload(storage, "r.csv.gz",
-                ObjectMetadata.of("x"), config.withDigest("SHA-256"), out -> {
-                    try (GZIPOutputStream gzip = new GZIPOutputStream(out)) {   // fecha o stream recebido
-                        gzip.write(text);
-                    }
+                ObjectMetadata.of("x"), config.withDigest("SHA-256"), ObjectBody.gzipped(out -> {
+                    out.write(text);
+                    out.close();   // o corpo pode fechar o stream recebido
                     return 1_000;
-                });
+                }));
 
         byte[] stored = storage.get("r.csv.gz").orElseThrow();
         assertEquals(1_000, result.value());
@@ -273,5 +272,16 @@ class MultipartOutputStreamTest {
         assertThrows(StorageException.class, () -> out.write(new byte[MultipartConfig.MIN_PART_SIZE]));
         assertTrue(aborted[0], "aborta sem esperar o close");
         assertThrows(IOException.class, () -> out.write(1), "nenhuma parte depois da falha");
+    }
+
+    @Test
+    void uploadGzipAbortaQuandoOCorpoFalha() {
+        assertThrows(IllegalStateException.class, () -> MultipartOutputStream.upload(storage, "k.gz",
+                ObjectMetadata.of("x"), config, ObjectBody.gzipped(out -> {
+                    out.write(new byte[10]);
+                    throw new IllegalStateException("falha lendo o banco");
+                })));
+        assertTrue(storage.get("k.gz").isEmpty());
+        assertEquals(0, storage.activeUploadCount());
     }
 }
