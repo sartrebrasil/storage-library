@@ -153,27 +153,31 @@ PresignedRequest upload = storage.presignPut("entrada/arquivo.csv", Duration.ofM
 | `defaults(executor)` | Partes de 16 MiB, até 4 subindo em paralelo. Memória ≈ 5 × 16 MiB. |
 | `sequential(partSize)` | Cada parte sobe na thread que escreve, com um único buffer e sem executor. Memória ≈ `partSize`. |
 | `.withMaxObjectBytes(n)` | A escrita que passaria de `n` bytes aborta o upload e lança `ObjectTooLargeException`. |
+| `.withDigest("SHA-256")` | Calcula o digest dos bytes enviados; lido em `digestHex()` depois do commit. Algoritmo inválido falha na configuração. |
 
 Falhas do storage no upload chegam como `StorageException`, com o tipo original
 (`AccessDeniedException`, `ObjectTooLargeException`…), em `write` ou em `commit()`, e o upload é
-abortado. `IOException` fica para interrupção, stream já finalizado e limite de partes.
+abortado na hora: escritas seguintes falham com `IOException`. `IOException` fica para interrupção,
+stream já finalizado e limite de partes.
 
-`GZIPOutputStream.close()` e `ObjectMapper.writeValue(OutputStream, …)` fecham o stream
-que recebem, e fechar sem `commit()` aborta. Entregue a eles `out.nonClosing()`. Para
-guardar o SHA-256 dos bytes enviados, um `DigestOutputStream` do JDK basta:
+`MultipartOutputStream.upload` cobre o caso comum: entrega ao corpo um stream que pode ser
+fechado sem efeito (`GZIPOutputStream.close()` e `ObjectMapper.writeValue(OutputStream, …)` fecham
+o que recebem), faz `commit()` quando o corpo retorna e aborta em qualquer exceção:
 
 ```java
-MessageDigest sha256 = MessageDigest.getInstance("SHA-256");
-try (MultipartOutputStream out = MultipartOutputStream.open(storage, key, metadata,
-        MultipartConfig.sequential(16 * MultipartConfig.MIB).withMaxObjectBytes(maxBytes))) {
-    try (GZIPOutputStream gzip = new GZIPOutputStream(new DigestOutputStream(out.nonClosing(), sha256))) {
-        writeReport(gzip);
+MultipartConfig config = MultipartConfig.sequential(16 * MultipartConfig.MIB)
+        .withMaxObjectBytes(maxBytes)
+        .withDigest("SHA-256");
+MultipartOutputStream.Result<Long> result = MultipartOutputStream.upload(storage, key, metadata, config, out -> {
+    try (GZIPOutputStream gzip = new GZIPOutputStream(out)) {
+        return writeReport(gzip);   // o valor devolvido volta em result.value()
     }
-    out.commit();
-    log.info("upload {} concluído: {} bytes, sha256={}", out.uploadId(), out.bytesWritten(),
-            HexFormat.of().formatHex(sha256.digest()));
-}
+});
+log.info("upload {} concluído: {} bytes, sha256={}", result.uploadId(), result.bytesWritten(), result.digestHex());
 ```
+
+Usando o stream direto (`open`/`commit`), entregue `out.nonClosing()` a quem fecha o stream:
+fechar sem `commit()` aborta.
 
 ### Leitura por faixa
 

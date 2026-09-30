@@ -1,43 +1,35 @@
 package com.example.storage;
 
 import java.io.IOException;
-import java.io.InterruptedIOException;
 import java.io.OutputStream;
-import java.util.ArrayList;
-import java.util.List;
+import java.security.MessageDigest;
+import java.util.HexFormat;
 import java.util.Objects;
-import java.util.concurrent.ArrayBlockingQueue;
-import java.util.concurrent.BlockingQueue;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.CompletionException;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.Executor;
-import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * OutputStream que transforma escrita sequencial em upload multipart.
  *
- * <p>Os bytes vão para um buffer do tamanho de uma parte; quando enche, a
- * parte é despachada em background e a escrita continua em outro buffer.
- * O número de buffers é limitado ({@code maxInFlight + 1}), então se o
- * storage ficar lento a thread que lê o banco bloqueia (backpressure) em
- * vez de acumular o relatório inteiro em memória. Com {@code maxInFlight = 0}
- * ({@link MultipartConfig#sequential}), cada parte sobe na própria thread que
- * escreve, reaproveitando um único buffer.</p>
+ * <p>Os bytes vão para um buffer do tamanho de uma parte; quando enche, a parte vai
+ * para o {@link PartUploader}. Em {@link MultipartConfig#sequential} ela sobe na própria
+ * thread que escreve, com um único buffer; com {@code maxInFlight > 0}, sobe em background
+ * enquanto a escrita continua em outro buffer, e o número limitado de buffers faz a thread
+ * que escreve esperar (backpressure) se o storage ficar lento.</p>
  *
  * <p><b>Contrato de finalização:</b> o objeto só é gravado com
  * {@link #commit()}. Um {@link #close()} sem commit ABORTA o upload. Assim,
  * um erro no meio da leitura do banco dentro de um try-with-resources nunca
- * publica um relatório truncado. Para entregar o stream a quem o fecha por
- * conta própria ({@code GZIPOutputStream}, {@code ObjectMapper.writeValue}),
- * use {@link #nonClosing()}.</p>
+ * publica um relatório truncado. Para o caso comum, {@link #upload} faz o commit
+ * e o abort por você; usando o stream direto, entregue {@link #nonClosing()} a quem
+ * o fecha por conta própria ({@code GZIPOutputStream}, {@code ObjectMapper.writeValue}).</p>
  *
  * <p>Com {@link MultipartConfig#maxObjectBytes()}, a escrita que passaria do
- * limite aborta o upload e lança {@link ObjectTooLargeException}.</p>
+ * limite aborta o upload e lança {@link ObjectTooLargeException}. Com
+ * {@link MultipartConfig#digestAlgorithm()}, o digest dos bytes enviados fica
+ * disponível em {@link #digestHex()} depois do commit.</p>
  *
- * <p>Falhas do storage chegam como {@link StorageException} (runtime), com o tipo
- * original, em {@code write} ou em {@link #commit()}; {@link IOException} fica para
- * interrupção, stream já finalizado e limite de partes.</p>
+ * <p>Qualquer falha aborta o upload. Falhas do storage chegam como {@link StorageException}
+ * (runtime), com o tipo original, em {@code write} ou em {@link #commit()};
+ * {@link IOException} fica para interrupção, stream já finalizado e limite de partes.</p>
  *
  * <p>Não é thread-safe para escrita: um único produtor por stream.</p>
  */
@@ -49,49 +41,72 @@ public final class MultipartOutputStream extends OutputStream {
 
     private enum State { OPEN, COMMITTED, ABORTED }
 
+    /** Escreve o conteúdo do objeto. Pode fechar o stream recebido; o upload não depende disso. */
+    @FunctionalInterface
+    public interface Body<T> {
+        T writeTo(OutputStream out) throws IOException;
+    }
+
+    /**
+     * Upload concluído.
+     *
+     * @param value     o que {@link Body#writeTo} devolveu
+     * @param digestHex digest dos bytes enviados, ou {@code null} sem {@link MultipartConfig#withDigest}
+     */
+    public record Result<T>(T value, String key, String uploadId, long bytesWritten, int partCount,
+                            String digestHex) {
+    }
+
     private final MultipartSession session;
-    private final int partSize;
-    private final Executor executor;
-    private final boolean sequential;
+    private final PartUploader uploader;
     private final long maxObjectBytes;
-    private final int maxBuffers;
-    private final BlockingQueue<byte[]> freeBuffers;
-    private final List<CompletableFuture<UploadedPart>> pending = new ArrayList<>();
-    private final AtomicReference<Throwable> failure = new AtomicReference<>();
+    private final MessageDigest digest;
 
     private byte[] buffer;
     private int position;
-    private int allocatedBuffers;
     private int nextPartNumber = 1;
     private long bytesWritten;
     private State state = State.OPEN;
+    private String digestHex;
 
     public static MultipartOutputStream open(ObjectStorage storage, String key,
                                              ObjectMetadata metadata, MultipartConfig config) {
         return new MultipartOutputStream(storage.initiateMultipart(key, metadata), config);
     }
 
+    /**
+     * Abre o upload, entrega a {@code body} um stream que pode ser fechado sem efeito e faz
+     * {@link #commit()} quando {@code body} retorna. Qualquer exceção aborta o upload e é relançada.
+     *
+     * <pre>{@code
+     * Result<Long> result = MultipartOutputStream.upload(storage, key, metadata, config.withDigest("SHA-256"),
+     *         out -> {
+     *             try (GZIPOutputStream gzip = new GZIPOutputStream(out)) {
+     *                 return writeReport(gzip);
+     *             }
+     *         });
+     * }</pre>
+     */
+    public static <T> Result<T> upload(ObjectStorage storage, String key, ObjectMetadata metadata,
+                                       MultipartConfig config, Body<T> body) throws IOException {
+        try (MultipartOutputStream out = open(storage, key, metadata, config)) {
+            T value = body.writeTo(out.nonClosing());
+            out.commit();
+            return new Result<>(value, key, out.uploadId(), out.bytesWritten(), out.partCount(), out.digestHex);
+        }
+    }
+
     public MultipartOutputStream(MultipartSession session, MultipartConfig config) {
         this.session = Objects.requireNonNull(session, "session");
-        this.partSize = config.partSize();
-        this.executor = config.executor();
-        this.sequential = config.isSequential();
+        this.uploader = PartUploader.of(session, config);
         this.maxObjectBytes = config.maxObjectBytes();
-        this.maxBuffers = config.maxInFlight() + 1;
-        this.freeBuffers = new ArrayBlockingQueue<>(maxBuffers);
-        this.buffer = new byte[partSize];   // demais buffers são alocados sob demanda
-        this.allocatedBuffers = 1;
+        this.digest = config.digestAlgorithm() == null ? null : MultipartConfig.newDigest(config.digestAlgorithm());
+        this.buffer = new byte[config.partSize()];
     }
 
     @Override
     public void write(int b) throws IOException {
-        ensureOpen();
-        ensureWithinLimit(1);
-        buffer[position++] = (byte) b;
-        bytesWritten++;
-        if (position == partSize) {
-            dispatchFullBuffer();
-        }
+        write(new byte[]{(byte) b}, 0, 1);
     }
 
     @Override
@@ -99,15 +114,18 @@ public final class MultipartOutputStream extends OutputStream {
         Objects.checkFromIndexSize(off, len, b.length);
         ensureOpen();
         ensureWithinLimit(len);
+        if (digest != null) {
+            digest.update(b, off, len);
+        }
+        bytesWritten += len;
         while (len > 0) {
-            int n = Math.min(len, partSize - position);
+            int n = Math.min(len, buffer.length - position);
             System.arraycopy(b, off, buffer, position, n);
             position += n;
             off += n;
             len -= n;
-            bytesWritten += n;
-            if (position == partSize) {
-                dispatchFullBuffer();
+            if (position == buffer.length) {
+                sendFullBuffer();
             }
         }
     }
@@ -118,6 +136,7 @@ public final class MultipartOutputStream extends OutputStream {
      */
     @Override
     public void flush() {
+        // no-op
     }
 
     /**
@@ -131,15 +150,18 @@ public final class MultipartOutputStream extends OutputStream {
         try {
             // A última parte pode ser menor que 5 MiB. Se nada foi escrito,
             // ainda enviamos uma parte vazia: o upload exige ao menos uma.
-            if (position > 0 || pending.isEmpty()) {
-                dispatch(buffer, position);
+            if (position > 0 || partCount() == 0) {
+                sendPart();
             }
             buffer = null;
-            session.complete(awaitAllParts());
-            state = State.COMMITTED;
+            session.complete(uploader.awaitAll());
         } catch (IOException | RuntimeException e) {
             abortQuietly(e);
-            throw e;   // StorageException continua StorageException: quem classifica por tipo depende disso
+            throw e;
+        }
+        state = State.COMMITTED;
+        if (digest != null) {
+            digestHex = HexFormat.of().formatHex(digest.digest());
         }
     }
 
@@ -158,6 +180,18 @@ public final class MultipartOutputStream extends OutputStream {
 
     public long bytesWritten() {
         return bytesWritten;
+    }
+
+    /**
+     * Digest em hexadecimal dos bytes enviados.
+     *
+     * @throws IllegalStateException sem {@link MultipartConfig#withDigest} ou antes do {@link #commit()}
+     */
+    public String digestHex() {
+        if (digest == null || state != State.COMMITTED) {
+            throw new IllegalStateException("digest disponível só com MultipartConfig.withDigest e depois do commit");
+        }
+        return digestHex;
     }
 
     public int partCount() {
@@ -202,134 +236,53 @@ public final class MultipartOutputStream extends OutputStream {
 
     // ------------------------------------------------------------------
 
-    private void dispatchFullBuffer() throws IOException {
-        dispatch(buffer, position);
-        buffer = acquireBuffer();   // pode bloquear: é aqui que acontece o backpressure
-        position = 0;
-    }
-
-    private void dispatch(byte[] data, int length) throws IOException {
-        rethrowIfFailed();
-        int partNumber = nextPartNumber;
-        if (partNumber > MAX_PARTS) {
-            throw new IOException("Limite de " + MAX_PARTS + " partes excedido em "
-                    + describe() + "; aumente o partSize");
-        }
-        nextPartNumber++;
-
-        CompletableFuture<UploadedPart> future = sequential
-                ? uploadNow(partNumber, data, length)
-                : CompletableFuture.supplyAsync(() -> session.uploadPart(partNumber, data, length), executor);
-        future.whenComplete((part, error) -> {
-            if (error != null) {
-                failure.compareAndSet(null, unwrap(error));
-            }
-            freeBuffers.offer(data);   // devolve o buffer ao pool, com sucesso ou falha
-        });
-        pending.add(future);
-        if (sequential) {
-            rethrowIfFailed();   // a parte já terminou: a falha aparece nesta mesma escrita
-        }
-    }
-
-    private CompletableFuture<UploadedPart> uploadNow(int partNumber, byte[] data, int length) {
+    private void sendFullBuffer() throws IOException {
         try {
-            return CompletableFuture.completedFuture(session.uploadPart(partNumber, data, length));
-        } catch (RuntimeException e) {
-            return CompletableFuture.failedFuture(e);
+            sendPart();
+            buffer = uploader.nextBuffer(buffer);
+            position = 0;
+        } catch (IOException | RuntimeException e) {
+            abortQuietly(e);
+            throw e;
         }
+    }
+
+    private void sendPart() throws IOException {
+        if (nextPartNumber > MAX_PARTS) {
+            throw new IOException("Limite de " + MAX_PARTS + " partes excedido em "
+                    + PartUploader.describe(session) + "; aumente o partSize");
+        }
+        uploader.send(nextPartNumber++, buffer, position);
     }
 
     private void ensureWithinLimit(int len) {
         if (maxObjectBytes != MultipartConfig.UNLIMITED && bytesWritten + len > maxObjectBytes) {
             ObjectTooLargeException tooLarge = new ObjectTooLargeException(
-                    describe() + " passaria de " + maxObjectBytes + " bytes", maxObjectBytes);
+                    PartUploader.describe(session) + " passaria de " + maxObjectBytes + " bytes", maxObjectBytes);
             abortQuietly(tooLarge);
             throw tooLarge;
         }
     }
 
-    private String describe() {
-        return session.key() + " (uploadId " + session.uploadId() + ")";
-    }
-
-    private byte[] acquireBuffer() throws IOException {
-        byte[] free = freeBuffers.poll();
-        if (free != null) {
-            return free;
-        }
-        if (allocatedBuffers < maxBuffers) {
-            allocatedBuffers++;
-            return new byte[partSize];
-        }
-        try {
-            return freeBuffers.take();
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new InterruptedIOException("Interrompido aguardando upload de parte");
-        }
-    }
-
-    private List<UploadedPart> awaitAllParts() throws IOException {
-        List<UploadedPart> parts = new ArrayList<>(pending.size());
-        for (CompletableFuture<UploadedPart> future : pending) {
-            try {
-                parts.add(future.get());
-            } catch (ExecutionException e) {
-                if (e.getCause() instanceof StorageException storage) {
-                    throw storage;
-                }
-                throw new IOException("Falha no upload de parte de " + describe(), e.getCause());
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                throw new InterruptedIOException("Interrompido aguardando partes");
-            }
-        }
-        return parts;
-    }
-
     private void abortQuietly(Throwable cause) {
         state = State.ABORTED;
         buffer = null;
-        // Espera as partes em voo: uma parte que termina DEPOIS do abort
-        // ficaria órfã no bucket (e sendo cobrada).
-        for (CompletableFuture<UploadedPart> future : pending) {
-            try {
-                future.join();
-            } catch (RuntimeException ignored) {
-                // a falha original já está em 'cause' ou em 'failure'
-            }
-        }
+        uploader.drain();
         try {
             session.abort();
         } catch (RuntimeException e) {
             if (cause != null) {
                 cause.addSuppressed(e);
             } else {
-                LOG.log(System.Logger.Level.WARNING,
-                        "Falha ao abortar upload de " + describe()
-                                + "; a lifecycle rule do bucket deve limpar", e);
+                LOG.log(System.Logger.Level.WARNING, "Falha ao abortar upload de " + PartUploader.describe(session)
+                        + "; a lifecycle rule do bucket deve limpar", e);
             }
         }
     }
 
     private void ensureOpen() throws IOException {
         if (state != State.OPEN) {
-            throw new IOException("Stream de " + describe() + " já finalizado (" + state + ")");
+            throw new IOException("Stream de " + PartUploader.describe(session) + " já finalizado (" + state + ")");
         }
-    }
-
-    private void rethrowIfFailed() throws IOException {
-        Throwable t = failure.get();
-        if (t instanceof StorageException storage) {
-            throw storage;   // sobe com o stack trace da thread da parte; a mensagem traz a chave
-        }
-        if (t != null) {
-            throw new IOException("Upload de parte falhou para " + describe(), t);
-        }
-    }
-
-    private static Throwable unwrap(Throwable t) {
-        return (t instanceof CompletionException && t.getCause() != null) ? t.getCause() : t;
     }
 }
