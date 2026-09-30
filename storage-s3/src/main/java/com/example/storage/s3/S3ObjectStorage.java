@@ -78,6 +78,15 @@ public final class S3ObjectStorage implements ObjectStorage {
      */
     public enum Checksum {
         CRC32(ChecksumAlgorithm.CRC32),
+        CRC32C(ChecksumAlgorithm.CRC32_C),
+        SHA1(ChecksumAlgorithm.SHA1),
+        SHA256(ChecksumAlgorithm.SHA256),
+        SHA512(ChecksumAlgorithm.SHA512),
+        CRC64NVME(ChecksumAlgorithm.CRC64_NVME),
+        MD5(ChecksumAlgorithm.MD5),
+        XXHASH3(ChecksumAlgorithm.XXHASH3),
+        XXHASH64(ChecksumAlgorithm.XXHASH64),
+        XXHASH128(ChecksumAlgorithm.XXHASH128),
         NONE(null);
 
         private final ChecksumAlgorithm algorithm;
