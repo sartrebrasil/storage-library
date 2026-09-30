@@ -291,4 +291,13 @@ class OciOperationsTest {
     private static GetWorkRequestResponse workRequest(WorkRequest.Status status) {
         return GetWorkRequestResponse.builder().workRequest(WorkRequest.builder().status(status).build()).build();
     }
+
+    @Test
+    void presignGetComNomeDeDownloadNaoEhSuportado() {
+        assertThrows(UnsupportedOperationException.class,
+                () -> storage.presignGet("r.csv", Duration.ofHours(1), "report-1.csv"));
+        assertThrows(IllegalArgumentException.class,
+                () -> storage.presignGet("r.csv", Duration.ofHours(1), "a\"b.csv"), "valida antes");
+        verify(client, never()).createPreauthenticatedRequest(any());
+    }
 }

@@ -543,6 +543,11 @@ public final class MeteredObjectStorage implements ObjectStorage {
 
 #### N5. Nome do arquivo na URL de download
 
+> Implementado em 30/09/2026 como MR 2 da G7 (branch `feat/g7-presign-download-name`). Além do
+> desenho abaixo: filesystem e SFTP também ficam com o default (`UnsupportedOperationException`), e o
+> decorador de métricas do starter delega o método novo (sem isso, o default lançaria mesmo com um
+> adapter que suporta). O helper de validação é `ObjectMetadata.attachmentDisposition`.
+
 `presignGet(key, ttl)` não permite sobrescrever o `Content-Disposition` da resposta, e o
 navegador salva com o nome da chave (`…-a1.csv.gz`), não `report-{id}.csv.gz`.
 

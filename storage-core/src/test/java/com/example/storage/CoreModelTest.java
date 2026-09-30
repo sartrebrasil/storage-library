@@ -104,6 +104,17 @@ class CoreModelTest {
         assertEquals(Condition.ifVersionMatches("v1"), base.ifVersionMatches("v1").condition());
     }
 
+    @Test
+    void nomeDeDownloadViraContentDispositionAttachment() {
+        assertEquals("attachment; filename=\"report-1.csv.gz\"", ObjectMetadata.attachmentDisposition("report-1.csv.gz"));
+        assertEquals("attachment; filename=\"r.csv\"", ObjectMetadata.of("text/csv").withDownloadName("r.csv").contentDisposition());
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"", "a\"b.csv", "a\\b.csv", "relatório.csv", "a\nb.csv"})
+    void nomeDeDownloadForaDoPortavelEhRejeitado(String name) {
+        assertThrows(IllegalArgumentException.class, () -> ObjectMetadata.attachmentDisposition(name));
+        assertThrows(IllegalArgumentException.class, () -> ObjectMetadata.empty().withDownloadName(name));
     @ParameterizedTest
     @ValueSource(strings = {"items=0-1", "bytes=0-1,5-6", "bytes=5-1", "bytes"})
     void byteRangeTolerantIgnoraOQueNaoEntende(String header) {

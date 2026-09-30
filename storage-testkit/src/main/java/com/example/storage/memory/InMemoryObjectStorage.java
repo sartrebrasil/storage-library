@@ -112,6 +112,13 @@ public final class InMemoryObjectStorage implements ObjectStorage {
         return memoryUri(key);
     }
 
+    /** Valida o nome e devolve a mesma URI de {@link #presignGet(String, Duration)}. */
+    @Override
+    public URI presignGet(String key, Duration ttl, String downloadName) {
+        ObjectMetadata.attachmentDisposition(downloadName);
+        return memoryUri(key);
+    }
+
     @Override
     public PresignedRequest presignPut(String key, Duration ttl, PutOptions options) {
         String contentType = options.metadata().contentType();
