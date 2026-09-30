@@ -283,9 +283,20 @@ public final class S3ObjectStorage implements ObjectStorage {
 
     @Override
     public URI presignGet(String key, Duration ttl) {
+        return presignGetObject(key, ttl, null);
+    }
+
+    /** {@code response-content-disposition} entra na assinatura: o cliente não consegue trocá-lo. */
+    @Override
+    public URI presignGet(String key, Duration ttl, String downloadName) {
+        return presignGetObject(key, ttl, ObjectMetadata.attachmentDisposition(downloadName));
+    }
+
+    private URI presignGetObject(String key, Duration ttl, String contentDisposition) {
         try {
             return presigner.presignGetObject(b -> b.signatureDuration(ttl)
-                    .getObjectRequest(r -> r.bucket(bucket).key(key))).url().toURI();
+                    .getObjectRequest(r -> r.bucket(bucket).key(key).responseContentDisposition(contentDisposition)))
+                    .url().toURI();
         } catch (SdkException | URISyntaxException e) {
             throw new StorageException("Falha ao gerar URL temporária de " + uri(key), e);
         }

@@ -77,4 +77,13 @@ class GcsPresignTest {
         assertThrows(StorageException.class, () -> new GcsObjectStorage(mocked, mock(MultipartUploadClient.class), "b")
                 .presignGet("k", Duration.ofMinutes(1)));
     }
+
+    @Test
+    void presignGetComNomeDeDownloadAssinaResponseContentDisposition() {
+        URI url = storage.presignGet("reports/r-a1.csv", Duration.ofMinutes(15), "report-1.csv");
+
+        assertTrue(url.getRawQuery().contains("response-content-disposition=attachment%3B%20filename%3D%22report-1.csv%22"),
+                url::toString);
+        assertTrue(url.getQuery().contains("X-Goog-Signature="), url::toString);
+    }
 }

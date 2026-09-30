@@ -147,6 +147,19 @@ public interface ObjectStorage {
     URI presignGet(String key, Duration ttl);
 
     /**
+     * Como {@link #presignGet(String, Duration)}, com a resposta pedindo para salvar como
+     * {@code downloadName} ({@code Content-Disposition: attachment}), qualquer que seja a chave.
+     *
+     * @throws IllegalArgumentException      nome inválido (ver {@link ObjectMetadata#attachmentDisposition})
+     * @throws UnsupportedOperationException provedor sem override de resposta na URL (OCI, filesystem,
+     *                                       SFTP); grave o nome no upload com {@link ObjectMetadata#withDownloadName}
+     */
+    default URI presignGet(String key, Duration ttl, String downloadName) {
+        ObjectMetadata.attachmentDisposition(downloadName);
+        throw new UnsupportedOperationException(getClass().getSimpleName() + " não sobrescreve Content-Disposition");
+    }
+
+    /**
      * Requisição temporária para enviar o objeto sem credenciais (ex.: direto do navegador).
      * O cliente deve enviar {@link PresignedRequest#headers()}. Metadata e pré-condição de
      * {@code options} viram cabeçalhos; nem todo provedor os impõe na assinatura

@@ -241,7 +241,14 @@ public final class AzureBlobObjectStorage implements ObjectStorage {
 
     @Override
     public URI presignGet(String key, Duration ttl) {
-        return URI.create(sasUrl(key, ttl, new BlobSasPermission().setReadPermission(true)));
+        return URI.create(sasUrl(key, ttl, new BlobSasPermission().setReadPermission(true), null));
+    }
+
+    /** O SAS carrega o {@code rscd} assinado: o Azure responde com esse {@code Content-Disposition}. */
+    @Override
+    public URI presignGet(String key, Duration ttl, String downloadName) {
+        return URI.create(sasUrl(key, ttl, new BlobSasPermission().setReadPermission(true),
+                ObjectMetadata.attachmentDisposition(downloadName)));
     }
 
     @Override
@@ -264,13 +271,14 @@ public final class AzureBlobObjectStorage implements ObjectStorage {
             case Condition.IfNotExists ifNotExists -> headers.put("If-None-Match", "*");
             case Condition.IfVersionMatches match -> headers.put("If-Match", match.version());
         }
-        return new PresignedRequest("PUT", URI.create(sasUrl(key, ttl, permission)), headers);
+        return new PresignedRequest("PUT", URI.create(sasUrl(key, ttl, permission, null)), headers);
     }
 
-    private String sasUrl(String key, Duration ttl, BlobSasPermission permission) {
+    private String sasUrl(String key, Duration ttl, BlobSasPermission permission, String contentDisposition) {
         OffsetDateTime now = OffsetDateTime.now(clock);
         OffsetDateTime expiry = now.plus(ttl);
-        BlobServiceSasSignatureValues values = new BlobServiceSasSignatureValues(expiry, permission);
+        BlobServiceSasSignatureValues values = new BlobServiceSasSignatureValues(expiry, permission)
+                .setContentDisposition(contentDisposition);
         BlobClient blob = blob(key);
         try {
             String sas;

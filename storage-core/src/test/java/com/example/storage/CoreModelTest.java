@@ -102,4 +102,17 @@ class CoreModelTest {
         assertEquals(Condition.ifNotExists(), base.ifNotExists().condition());
         assertEquals(Condition.ifVersionMatches("v1"), base.ifVersionMatches("v1").condition());
     }
+
+    @Test
+    void nomeDeDownloadViraContentDispositionAttachment() {
+        assertEquals("attachment; filename=\"report-1.csv.gz\"", ObjectMetadata.attachmentDisposition("report-1.csv.gz"));
+        assertEquals("attachment; filename=\"r.csv\"", ObjectMetadata.of("text/csv").withDownloadName("r.csv").contentDisposition());
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"", "a\"b.csv", "a\\b.csv", "relatório.csv", "a\nb.csv"})
+    void nomeDeDownloadForaDoPortavelEhRejeitado(String name) {
+        assertThrows(IllegalArgumentException.class, () -> ObjectMetadata.attachmentDisposition(name));
+        assertThrows(IllegalArgumentException.class, () -> ObjectMetadata.empty().withDownloadName(name));
+    }
 }

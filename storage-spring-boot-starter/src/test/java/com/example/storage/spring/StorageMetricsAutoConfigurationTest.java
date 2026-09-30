@@ -76,4 +76,17 @@ class StorageMetricsAutoConfigurationTest {
                 .withClassLoader(new FilteredClassLoader(MeterRegistry.class))
                 .run(context -> assertThat(context).doesNotHaveBean(StorageMetricsAutoConfiguration.class));
     }
+
+    @Test
+    void presignGetComNomeDeDownloadDelegaEMede() {
+        runner.withBean(MeterRegistry.class, SimpleMeterRegistry::new)
+                .withBean(ObjectStorage.class, InMemoryObjectStorage::new)
+                .run(context -> {
+                    context.getBean(ObjectStorage.class).presignGet("k", java.time.Duration.ofMinutes(1), "r.csv");
+
+                    MeterRegistry registry = context.getBean(MeterRegistry.class);
+                    assertThat(registry.get("storage.operations").tag("operation", "presignGet")
+                            .tag("outcome", "success").timer().count()).isEqualTo(1);
+                });
+    }
 }

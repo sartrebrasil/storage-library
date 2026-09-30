@@ -251,6 +251,14 @@ public final class GcsObjectStorage implements ObjectStorage {
         return sign(key, ttl, Storage.SignUrlOption.withV4Signature());
     }
 
+    /** {@code response-content-disposition} entra na assinatura V4 como query param. */
+    @Override
+    public URI presignGet(String key, Duration ttl, String downloadName) {
+        String disposition = ObjectMetadata.attachmentDisposition(downloadName);
+        return sign(key, ttl, Storage.SignUrlOption.withV4Signature(),
+                Storage.SignUrlOption.withQueryParams(Map.of("response-content-disposition", disposition)));
+    }
+
     @Override
     public PresignedRequest presignPut(String key, Duration ttl, PutOptions options) {
         ObjectMetadata metadata = options.metadata();
