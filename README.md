@@ -20,6 +20,7 @@ multipart em streaming (sem manter o arquivo inteiro em memória ou em disco).
 | `storage-filesystem` | Adapter sobre filesystem local (`java.nio.file`), sem SDK de nuvem. |
 | `storage-sftp` | Adapter sobre SFTP (sshj), para servidores que só falam SSH. |
 | `storage-spring-boot-starter` | Auto-configuração Spring Boot 3.5 por properties (`storage.*`). |
+| `storage-spring-web` | Download por Spring MVC (`ObjectResponses`, `StreamLimiter`). Só `spring-web`, sem autoconfigure. |
 | `storage-bom` | Alinha as versões dos módulos acima. |
 
 Cada adapter traz só o SDK do seu provedor.
@@ -206,6 +207,37 @@ fez `head` completa com `e.withTotalSize(info.size())`.
 
 A faixa é cortada no fim do objeto, como no HTTP. `bytes=0-` equivale a `ByteRange.all()` e
 é servido inteiro, sem `206`. Num objeto vazio, qualquer faixa é `416`.
+
+### Download por Spring MVC
+
+`storage-spring-web` monta a resposta acima para um controller: `200`/`206`, `Content-Disposition`
+(RFC 6266, com `filename*` para nomes com acento), `Content-Type`, `Content-Length`, `Accept-Ranges`
+e `Content-Range`, com o stream do storage como corpo. `StreamLimiter` limita downloads simultâneos
+por instância sem bloquear; o `Permit` é solto quando o Spring fecha o corpo, ou na hora se a leitura
+falhar.
+
+```java
+StreamLimiter limiter = new StreamLimiter(20);
+
+@GetMapping("/files/{id}")
+ResponseEntity<Resource> download(@PathVariable String id, @RequestHeader(value = "Range", required = false) String range) {
+    ObjectInfo head = storage.head(keyOf(id)).orElseThrow(NotFound::new);
+    StreamLimiter.Permit permit = limiter.tryAcquire().orElseThrow(TooManyDownloads::new);   // 429
+    return ObjectResponses.attachment(storage, head, range,
+            Attachment.of("report-1.csv.gz", "application/gzip").withHeader("X-Checksum-Sha256", sha256), permit);
+}
+
+@ExceptionHandler(RangeNotSatisfiableException.class)
+ResponseEntity<Void> rangeNotSatisfiable(RangeNotSatisfiableException e) {
+    ResponseEntity.BodyBuilder response = ResponseEntity.status(HttpStatus.REQUESTED_RANGE_NOT_SATISFIABLE);
+    ObjectResponses.unsatisfiedContentRange(e).ifPresent(value -> response.header(HttpHeaders.CONTENT_RANGE, value));
+    return response.build();
+}
+```
+
+O `head` é do chamador porque ele já o faz (para responder `404`/`410`), e é o tamanho dele que
+completa o `416` quando o adapter não sabe. A lib não registra `@ControllerAdvice`: o mapeamento
+de exceções é da aplicação. Só Spring MVC; WebFlux não é suportado.
 
 ## Spring Boot
 
