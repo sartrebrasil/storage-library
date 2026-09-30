@@ -30,4 +30,20 @@ public interface MultipartSession {
 
     /** Descarta as partes já enviadas. Deve ser idempotente. */
     void abort();
+
+    /**
+     * Partes já enviadas a este upload e ainda não concluídas, ordenadas por número.
+     * Vazio se o upload já foi concluído ou abortado.
+     */
+    default List<UploadedPart> listParts() {
+        throw new UnsupportedOperationException("listParts não suportado por " + getClass().getSimpleName());
+    }
+
+    /**
+     * Partes do objeto gerado por {@link #complete}, ordenadas por número. Só S3 e Azure
+     * guardam essa informação depois do commit; os demais lançam {@link UnsupportedOperationException}.
+     */
+    default List<UploadedPart> listCompletedParts() {
+        throw new UnsupportedOperationException("listCompletedParts não suportado por " + getClass().getSimpleName());
+    }
 }

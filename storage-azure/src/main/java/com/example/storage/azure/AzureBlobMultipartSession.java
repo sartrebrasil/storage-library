@@ -4,6 +4,10 @@ import com.azure.core.exception.AzureException;
 import com.azure.core.util.BinaryData;
 import com.azure.core.util.Context;
 import com.azure.storage.blob.models.BlobHttpHeaders;
+import com.azure.storage.blob.models.BlobStorageException;
+import com.azure.storage.blob.models.Block;
+import com.azure.storage.blob.models.BlockList;
+import com.azure.storage.blob.models.BlockListType;
 import com.azure.storage.blob.options.BlockBlobCommitBlockListOptions;
 import com.azure.storage.blob.options.BlockBlobStageBlockOptions;
 import com.azure.storage.blob.specialized.BlockBlobClient;
@@ -19,6 +23,7 @@ import java.security.NoSuchAlgorithmException;
 import java.util.Base64;
 import java.util.Comparator;
 import java.util.List;
+import java.util.function.Function;
 
 final class AzureBlobMultipartSession implements MultipartSession {
 
@@ -93,10 +98,44 @@ final class AzureBlobMultipartSession implements MultipartSession {
     public void abort() {
     }
 
+    @Override
+    public List<UploadedPart> listParts() {
+        return blocks(BlockListType.UNCOMMITTED, BlockList::getUncommittedBlocks);
+    }
+
+    @Override
+    public List<UploadedPart> listCompletedParts() {
+        return blocks(BlockListType.COMMITTED, BlockList::getCommittedBlocks);
+    }
+
+    /** Filtra pelo uploadId: o mesmo blob pode ter blocos de outros uploads ou de um put simples. */
+    private List<UploadedPart> blocks(BlockListType type, Function<BlockList, List<Block>> pick) {
+        String prefix = uploadId + "-";
+        try {
+            return pick.apply(blob.listBlocks(type)).stream()
+                    .map(Block::getName)
+                    .filter(id -> decode(id).startsWith(prefix))
+                    .map(id -> new UploadedPart(Integer.parseInt(decode(id).substring(prefix.length())), id, null))
+                    .sorted(Comparator.comparingInt(UploadedPart::partNumber))
+                    .toList();
+        } catch (BlobStorageException e) {
+            if (e.getStatusCode() == 404) {
+                return List.of();   // blob sem nenhum bloco
+            }
+            throw new StorageException("Falha ao listar blocos de " + key, e);
+        } catch (AzureException e) {
+            throw new StorageException("Falha ao listar blocos de " + key, e);
+        }
+    }
+
     /** Ids de bloco precisam ter o mesmo tamanho no blob; o uploadId evita colisão entre uploads. */
     private String blockId(int partNumber) {
         String raw = uploadId + "-" + String.format("%05d", partNumber);
         return Base64.getEncoder().encodeToString(raw.getBytes(StandardCharsets.US_ASCII));
+    }
+
+    private static String decode(String blockId) {
+        return new String(Base64.getDecoder().decode(blockId), StandardCharsets.US_ASCII);
     }
 
     private static byte[] md5(byte[] data, int length) {

@@ -108,6 +108,26 @@ final class SftpMultipartSession implements MultipartSession {
         deleteUploadDir();
     }
 
+    @Override
+    public List<UploadedPart> listParts() {
+        try (SFTPClient sftp = sshClient.newSFTPClient()) {
+            List<RemoteResourceInfo> entries;
+            try {
+                entries = sftp.ls(uploadDir);
+            } catch (SFTPException alreadyGone) {
+                return List.of();   // concluído/abortado
+            }
+            return entries.stream()
+                    .map(RemoteResourceInfo::getName)
+                    .filter(name -> name.startsWith("part-"))
+                    .map(name -> new UploadedPart(Integer.parseInt(name.substring("part-".length())), name, null))
+                    .sorted(Comparator.comparingInt(UploadedPart::partNumber))
+                    .toList();
+        } catch (IOException e) {
+            throw new StorageException("Falha ao listar partes do upload de " + key, e);
+        }
+    }
+
     private String partPath(int partNumber) {
         return uploadDir + "/part-" + partNumber;
     }
