@@ -75,24 +75,28 @@ public final class S3ObjectStorage implements ObjectStorage {
      * própria. Para desligar de fato, construa o {@link S3Client} com
      * {@code requestChecksumCalculation(WHEN_REQUIRED)} e
      * {@code responseChecksumValidation(WHEN_REQUIRED)}, como o starter faz.</p>
+     *
+     * <p>O nome de cada constante é o valor do algoritmo no protocolo, resolvido no SDK só quando o
+     * adapter é construído. Referenciar {@code ChecksumAlgorithm.SHA512} aqui faria o enum inteiro
+     * falhar ao carregar num SDK que não tem a constante (SHA512, MD5 e XXHASH* só existem nos
+     * mais novos), inclusive para quem usa {@code CRC32}.</p>
      */
     public enum Checksum {
-        CRC32(ChecksumAlgorithm.CRC32),
-        CRC32C(ChecksumAlgorithm.CRC32_C),
-        SHA1(ChecksumAlgorithm.SHA1),
-        SHA256(ChecksumAlgorithm.SHA256),
-        SHA512(ChecksumAlgorithm.SHA512),
-        CRC64NVME(ChecksumAlgorithm.CRC64_NVME),
-        MD5(ChecksumAlgorithm.MD5),
-        XXHASH3(ChecksumAlgorithm.XXHASH3),
-        XXHASH64(ChecksumAlgorithm.XXHASH64),
-        XXHASH128(ChecksumAlgorithm.XXHASH128),
-        NONE(null);
+        CRC32, CRC32C, SHA1, SHA256, SHA512, CRC64NVME, MD5, XXHASH3, XXHASH64, XXHASH128, NONE;
 
-        private final ChecksumAlgorithm algorithm;
-
-        Checksum(ChecksumAlgorithm algorithm) {
-            this.algorithm = algorithm;
+        /**
+         * @throws IllegalStateException o AWS SDK do classpath não conhece o algoritmo
+         */
+        ChecksumAlgorithm algorithm() {
+            if (this == NONE) {
+                return null;
+            }
+            ChecksumAlgorithm algorithm = ChecksumAlgorithm.fromValue(name());
+            if (algorithm == ChecksumAlgorithm.UNKNOWN_TO_SDK_VERSION) {
+                throw new IllegalStateException("Checksum " + this + " não existe no AWS SDK do classpath; "
+                        + "atualize o SDK ou use outro algoritmo");
+            }
+            return algorithm;
         }
     }
 
@@ -119,7 +123,7 @@ public final class S3ObjectStorage implements ObjectStorage {
         this.presigner = Objects.requireNonNull(presigner, "presigner");
         this.bucket = Objects.requireNonNull(bucket, "bucket");
         this.maxSingleCopy = maxSingleCopy;
-        this.checksum = Objects.requireNonNull(checksum, "checksum").algorithm;
+        this.checksum = Objects.requireNonNull(checksum, "checksum").algorithm();
     }
 
     @Override
