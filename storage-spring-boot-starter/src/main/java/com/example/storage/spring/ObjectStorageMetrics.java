@@ -111,6 +111,11 @@ class ObjectStorageMetrics implements ObjectStorage {
     }
 
     @Override
+    public URI presignGet(String key, Duration ttl, String downloadName) {
+        return timed("presignGet", () -> delegate.presignGet(key, ttl, downloadName));
+    }
+
+    @Override
     public PresignedRequest presignPut(String key, Duration ttl, PutOptions options) {
         return timed("presignPut", () -> delegate.presignPut(key, ttl, options));
     }

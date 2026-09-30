@@ -99,4 +99,13 @@ class AzureBlobPresignTest {
         verify(blob, never()).generateSas(any());
         assertEquals(URI.create("https://conta.blob.core.windows.net/reports/r.csv?sv=x&sp=r&sig=abc"), url);
     }
+
+    @Test
+    void presignGetComNomeDeDownloadAssinaRscd() {
+        URI url = new AzureBlobObjectStorage(sharedKeyContainer(), false, clock)
+                .presignGet("relatorios/r-a1.csv", Duration.ofMinutes(15), "report-1.csv");
+
+        assertTrue(url.getQuery().contains("rscd=attachment; filename=\"report-1.csv\""), url::toString);
+        assertTrue(url.getQuery().contains("sig="), url::toString);
+    }
 }
