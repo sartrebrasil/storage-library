@@ -48,7 +48,7 @@ public record ObjectContent(InputStream stream, ByteRange range, long totalSize)
         if (last < first || total == 0) {
             // MinIO responde 206 com "bytes 0--1/0" a uma faixa num objeto vazio, em vez de 416
             closeQuietly(stream);
-            throw new RangeNotSatisfiableException("Faixa fora do objeto: " + contentRange, null);
+            throw new RangeNotSatisfiableException("Faixa fora do objeto: " + contentRange, null, total);
         }
         return new ObjectContent(stream, ByteRange.of(first, last - first + 1), total);
     }
