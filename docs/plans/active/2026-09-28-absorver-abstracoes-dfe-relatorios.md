@@ -107,6 +107,13 @@ BOM dele, e esse BOM prevalece.
   Falta só fixar isso no CI: um job que roda `mvn -pl storage-s3 -am test
   -Daws.sdk.version=2.31.78`.
 - Documentar no README a versão mínima suportada de cada SDK.
+- 30/09/2026: `S3ObjectStorage.Checksum` (commit `605ac96`) referenciava `ChecksumAlgorithm.SHA512`,
+  `MD5` e `XXHASH*`, que não existem em `2.31.78`; o enum falhava no `clinit` e nenhum `S3ObjectStorage`
+  podia ser construído no consumidor. Corrigido resolvendo o algoritmo pelo nome
+  (`ChecksumAlgorithm.fromValue`) na construção do adapter (branch `fix/s3-checksum-older-sdk`). O job
+  acima não compilaria hoje: `S3MultipartSession` chama `checksumSHA512()` e afins, ausentes em
+  `2.31.78`. Em runtime isso só quebra com esses algoritmos, mas o job precisa rodar o jar compilado
+  contra `2.55.6` com o SDK antigo no classpath, não recompilar.
 
 **Pronto quando:** o artefato é resolvido pelo pipeline do consumidor, e o `storage-s3`
 passa nos testes com a versão mínima declarada.
