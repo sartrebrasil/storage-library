@@ -21,6 +21,7 @@
     <module>storage-filesystem</module>
     <module>storage-sftp</module>
     <module>storage-spring-boot-starter</module>
+    <module>storage-spring-web</module>
   </modules>
 
   <properties>
