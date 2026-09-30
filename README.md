@@ -72,8 +72,8 @@ Instala os artefatos em `~/.m2`. Para usar em outro projeto:
 | Remoção | `delete(key)`, `deleteAll(keys)` | Idempotentes; `deleteAll` devolve as falhas. |
 | Cópia | `copy(source, target)` | Mesmo bucket; preserva metadata; bloqueia até concluir. |
 | Escrita condicional | `PutOptions.ifNotExists()`, `.ifVersionMatches(v)` | Falha com `PreconditionFailedException`. |
-| URL de download com nome | `presignGet(key, ttl, downloadName)` | A resposta vem com `Content-Disposition: attachment; filename="…"`, qualquer que seja a chave. OCI, filesystem e SFTP lançam `UnsupportedOperationException`: grave o nome no upload com `ObjectMetadata.withDownloadName`. |
 | URL de download | `presignGet(key, ttl)` | `PresignTtl(bytesPorSegundo, min, max).forSize(tamanho)` calcula um TTL proporcional ao tamanho. |
+| URL de download com nome | `presignGet(key, ttl, downloadName)` | A resposta vem com `Content-Disposition: attachment; filename="…"`, qualquer que seja a chave. OCI, filesystem e SFTP lançam `UnsupportedOperationException`: grave o nome no upload com `ObjectMetadata.withDownloadName`. |
 | URL de upload | `presignPut(key, ttl, options)` | Devolve método, URL e cabeçalhos que o cliente deve enviar. |
 | Acesso ao bucket | `checkAccess()` | Falha se o bucket não existe ou as credenciais não alcançam. Base do health check. |
 
