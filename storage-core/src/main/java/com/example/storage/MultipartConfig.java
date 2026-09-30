@@ -1,5 +1,7 @@
 package com.example.storage;
 
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.Objects;
 import java.util.concurrent.Executor;
 
@@ -10,11 +12,14 @@ import java.util.concurrent.Executor;
  * @param executor       onde os uploads rodam (virtual threads funcionam bem aqui);
  *                       ignorado, e pode ser {@code null}, no modo sequencial
  * @param maxObjectBytes tamanho máximo do objeto; {@link #UNLIMITED} desliga o limite
+ * @param digestAlgorithm algoritmo de {@link MessageDigest} ("SHA-256"...) calculado sobre os bytes
+ *                       enviados; {@code null} desliga
  *
  * Memória de pico por upload ≈ (maxInFlight + 1) × partSize; no modo sequencial, um único partSize.
  * Tamanho máximo do objeto ≈ 10.000 × partSize (16 MiB → ~156 GiB).
  */
-public record MultipartConfig(int partSize, int maxInFlight, Executor executor, long maxObjectBytes) {
+public record MultipartConfig(int partSize, int maxInFlight, Executor executor, long maxObjectBytes,
+                              String digestAlgorithm) {
 
     public static final int MIB = 1024 * 1024;
     public static final int MIN_PART_SIZE = 5 * MIB;
@@ -33,6 +38,13 @@ public record MultipartConfig(int partSize, int maxInFlight, Executor executor, 
         if (maxObjectBytes < UNLIMITED) {
             throw new IllegalArgumentException("maxObjectBytes deve ser >= 0 ou UNLIMITED");
         }
+        if (digestAlgorithm != null) {
+            newDigest(digestAlgorithm);   // algoritmo inválido falha na configuração, não no upload
+        }
+    }
+
+    public MultipartConfig(int partSize, int maxInFlight, Executor executor, long maxObjectBytes) {
+        this(partSize, maxInFlight, executor, maxObjectBytes, null);
     }
 
     public MultipartConfig(int partSize, int maxInFlight, Executor executor) {
@@ -49,10 +61,24 @@ public record MultipartConfig(int partSize, int maxInFlight, Executor executor, 
     }
 
     public MultipartConfig withMaxObjectBytes(long maxObjectBytes) {
-        return new MultipartConfig(partSize, maxInFlight, executor, maxObjectBytes);
+        return new MultipartConfig(partSize, maxInFlight, executor, maxObjectBytes, digestAlgorithm);
+    }
+
+    /** Calcula o digest dos bytes enviados; lido em {@link MultipartOutputStream#digestHex()}. */
+    public MultipartConfig withDigest(String digestAlgorithm) {
+        return new MultipartConfig(partSize, maxInFlight, executor, maxObjectBytes,
+                Objects.requireNonNull(digestAlgorithm, "digestAlgorithm"));
     }
 
     public boolean isSequential() {
         return maxInFlight == 0;
+    }
+
+    static MessageDigest newDigest(String algorithm) {
+        try {
+            return MessageDigest.getInstance(algorithm);
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalArgumentException("Algoritmo de digest não suportado: " + algorithm, e);
+        }
     }
 }

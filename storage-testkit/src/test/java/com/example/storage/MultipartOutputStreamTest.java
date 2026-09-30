@@ -7,6 +7,8 @@ import org.junit.jupiter.api.Test;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.util.HexFormat;
 import java.util.Collections;
 import java.util.IdentityHashMap;
 import java.util.List;
@@ -207,5 +209,69 @@ class MultipartOutputStreamTest {
         assertThrows(NullPointerException.class, () -> new MultipartConfig(MultipartConfig.MIN_PART_SIZE, 1, null));
         assertThrows(IllegalArgumentException.class, () -> new MultipartConfig(MultipartConfig.MIN_PART_SIZE, -1, null));
         assertThrows(IllegalArgumentException.class, () -> config.withMaxObjectBytes(-2));
+    }
+
+    @Test
+    void uploadCommitaDevolveOValorECalculaODigestDosBytesEnviados() throws Exception {
+        byte[] text = "linha;valor\n".repeat(1_000).getBytes(StandardCharsets.UTF_8);
+
+        MultipartOutputStream.Result<Integer> result = MultipartOutputStream.upload(storage, "r.csv.gz",
+                ObjectMetadata.of("x"), config.withDigest("SHA-256"), out -> {
+                    try (GZIPOutputStream gzip = new GZIPOutputStream(out)) {   // fecha o stream recebido
+                        gzip.write(text);
+                    }
+                    return 1_000;
+                });
+
+        byte[] stored = storage.get("r.csv.gz").orElseThrow();
+        assertEquals(1_000, result.value());
+        assertEquals(stored.length, result.bytesWritten());
+        assertEquals(HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(stored)), result.digestHex());
+        try (GZIPInputStream in = new GZIPInputStream(new ByteArrayInputStream(stored))) {
+            assertArrayEquals(text, in.readAllBytes());
+        }
+    }
+
+    @Test
+    void uploadAbortaQuandoOBodyFalha() {
+        assertThrows(IllegalStateException.class, () -> MultipartOutputStream.upload(storage, "k",
+                ObjectMetadata.of("x"), config, out -> {
+                    out.write(new byte[10]);
+                    out.close();   // fechar não publica
+                    throw new IllegalStateException("falha lendo o banco");
+                }));
+        assertTrue(storage.get("k").isEmpty());
+        assertEquals(0, storage.activeUploadCount());
+    }
+
+    @Test
+    void digestExigeConfiguracaoECommit() throws IOException {
+        assertThrows(IllegalArgumentException.class, () -> config.withDigest("NAO-EXISTE"));
+        try (MultipartOutputStream out = MultipartOutputStream.open(storage, "d", ObjectMetadata.of("x"), config)) {
+            out.commit();
+            assertThrows(IllegalStateException.class, out::digestHex, "sem withDigest");
+        }
+        try (MultipartOutputStream out = MultipartOutputStream.open(storage, "d", ObjectMetadata.of("x"),
+                config.withDigest("SHA-256"))) {
+            assertThrows(IllegalStateException.class, out::digestHex, "antes do commit");
+        }
+    }
+
+    @Test
+    void falhaDeParteAbortaNaHoraEBloqueiaNovasEscritas() {
+        boolean[] aborted = {false};
+        MultipartSession failing = new MultipartSession() {
+            public String key() { return "k"; }
+            public String uploadId() { return "u-1"; }
+            public UploadedPart uploadPart(int n, byte[] d, int l) { throw new StorageException("503", null); }
+            public void complete(List<UploadedPart> parts) { fail("não deveria concluir"); }
+            public void abort() { aborted[0] = true; }
+        };
+        MultipartOutputStream out = new MultipartOutputStream(failing,
+                MultipartConfig.sequential(MultipartConfig.MIN_PART_SIZE));
+
+        assertThrows(StorageException.class, () -> out.write(new byte[MultipartConfig.MIN_PART_SIZE]));
+        assertTrue(aborted[0], "aborta sem esperar o close");
+        assertThrows(IOException.class, () -> out.write(1), "nenhuma parte depois da falha");
     }
 }

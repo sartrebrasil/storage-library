@@ -33,8 +33,24 @@ outro plano, no repositório dele.
 | Item | Decisão | Motivo |
 |---|---|---|
 | B1: chaves de metadata com hífen | A lib continua estrita (`[a-z_][a-z0-9_]*`). O consumidor renomeia para `report_id` etc. | O Azure rejeita hífen. Relaxar por adapter quebra a portabilidade, que é a razão da lib existir. |
-| L1: SHA-256 dentro do multipart | Não entra na lib. O README ganha um exemplo com `java.security.DigestOutputStream`. | O JDK resolve em uma linha. `bytesWritten()` já cobre o tamanho. |
 | L9: prefixo de chave e properties no namespace do consumidor | Não entra. O consumidor declara o próprio bean `ObjectStorage` e mantém o prefixo em `ArtifactCoordinates`. | O starter já desliga com um `ObjectStorage` próprio. Um prefixo global é uma abstração que nenhum outro caso pediu. |
+
+## Revisões
+
+- **29/09/2026 — L1 revisto: digest e `upload` entram na lib.** Na migração do consumidor, o
+  `DigestOutputStream`, o `nonClosing()` + `commit()` e o try aninhado deixaram o writer mais
+  complexo que o `S3MultipartOutputStream` que ele substituiu. A lib ganhou
+  `MultipartConfig.withDigest(algorithm)` com `MultipartOutputStream.digestHex()`, e
+  `MultipartOutputStream.upload(storage, key, metadata, config, body)`, que faz commit quando o corpo
+  retorna e aborta em qualquer exceção, devolvendo `Result` (valor do corpo, `uploadId`, bytes, partes,
+  digest). API aditiva: `open`/`commit`/`nonClosing` continuam. Testes: 3 novos em
+  `MultipartOutputStreamTest`.
+- **30/09/2026 — `MultipartOutputStream` separado por responsabilidade.** O stream ficou com
+  buffer, limite, digest e estado; o envio das partes foi para `PartUploader` (package-private), com
+  `SequentialPartUploader` (um buffer, envio na thread que escreve) e `ParallelPartUploader`
+  (executor, pool de buffers, backpressure). API pública igual. Mudança de comportamento: uma falha
+  de parte em `write` aborta o upload na hora, em vez de esperar o `close()`. Teste novo:
+  `falhaDeParteAbortaNaHoraEBloqueiaNovasEscritas`.
 
 ## Fases
 
