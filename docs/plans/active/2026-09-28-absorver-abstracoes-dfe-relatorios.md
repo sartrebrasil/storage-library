@@ -62,7 +62,7 @@ outro plano, no repositório dele.
 | G3 | S3: checksum configurável, parte vazia no LocalStack, credenciais no starter | L3, L11, L8 | G0 | Concluída em 28/09/2026 |
 | G4 | Leitura: `Range` HTTP, conteúdo com metadados, 416 | L4, L5, L6 | G0 | Concluída em 28/09/2026 |
 | G5 | Health check | L7 | G0 | Concluída em 28/09/2026 |
-| G6 | Lacunas da segunda análise: credencial vazia, tipo da exceção no multipart, pool HTTP, métricas, nome na URL de download | N1 a N6 | — | N1 e N2 concluídos em 28/09/2026; N3 e N5 em rascunho; N4 adiado; N6 sem mudança |
+| G6 | Lacunas da segunda análise: credencial vazia, tipo da exceção no multipart, pool HTTP, métricas, nome na URL de download | N1 a N6 | — | N1 e N2 concluídos em 28/09/2026; N3 e N5 em rascunho; N4 concluído em 02/10/2026; N6 sem mudança |
 | G7 | Pipeline de artefato: `ObjectBody` com gzip, TTL proporcional, `Range` tolerante, `416` com tamanho, módulo `storage-spring-web` | P1 a P7 | N5 (MR 2) | MRs 1 (P1 a P4) e 2 (P5) mergeados em 30/09/2026; MR 3 (P6) em `feat/g7-storage-spring-web`; MR 4 (consumidor) pendente |
 
 G2 a G5 são independentes entre si e podem virar MRs separados. G1 só bloqueia o
@@ -373,7 +373,7 @@ Nada abaixo está implementado. Cada item traz o problema, o código proposto e 
 | N1 | Bug no starter | Fazer |
 | N2 | Bug de contrato | Fazer |
 | N3 | Abstração nova | Fazer |
-| N4 | Abstração nova | Adiar |
+| N4 | Abstração nova | Concluído |
 | N5 | Abstração nova | Fazer |
 | N6 | Decisão de semântica | Não mudar; já documentado |
 
@@ -532,7 +532,18 @@ Testes:
 - Sem nenhuma das properties: nenhum bean `SdkHttpClient`, e o SDK usa o próprio padrão.
 - `api-call-timeout` chega a `serviceClientConfiguration().overrideConfiguration()`.
 
-#### N4. Métricas Micrometer (recomendação: adiar)
+#### N4. Métricas Micrometer
+
+> Concluído em 02/10/2026. Diferente do esboço abaixo: `ObjectStorageMetrics` usa a Observation
+> API (`storage.operations`, tags `operation`, `storage`, `outcome` e `error`), então gera o timer
+> e, com Micrometer Tracing, um span por operação. Ativa com um `ObservationRegistry` no contexto.
+> Depois, também em 02/10/2026: `outcome=not_found` para `ObjectNotFoundException` (sem marcar o
+> span como erro), `open` e `list` medidos até o fim do consumo, e o health check usando o storage
+> sem o decorador. Ficaram de fora a medição de `uploadPart` (exige propagar o contexto no executor
+> do multipart) e `storage.bytes.written`. O custo de API se confirmou e está no README:
+> `getBean(S3ObjectStorage.class)` não encontra o bean decorado.
+
+Análise original (recomendação: adiar):
 
 O consumidor já tem `@Timed` e o `ReportMetrics` de domínio. Um decorator no starter duplicaria
 parte disso, e há um custo de API: embrulhar o bean por `BeanPostProcessor` esconde o tipo

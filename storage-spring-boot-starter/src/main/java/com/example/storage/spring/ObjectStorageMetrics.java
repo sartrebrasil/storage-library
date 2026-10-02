@@ -4,55 +4,98 @@ import com.example.storage.ByteRange;
 import com.example.storage.MultipartSession;
 import com.example.storage.ObjectInfo;
 import com.example.storage.ObjectMetadata;
+import com.example.storage.ObjectNotFoundException;
 import com.example.storage.ObjectStorage;
 import com.example.storage.PresignedRequest;
 import com.example.storage.PutOptions;
 import com.example.storage.ObjectSummary;
-import io.micrometer.core.instrument.MeterRegistry;
-import io.micrometer.core.instrument.Timer;
+import io.micrometer.observation.Observation;
+import io.micrometer.observation.ObservationRegistry;
 
+import java.io.FilterInputStream;
+import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
 import java.time.Duration;
 import java.util.Optional;
+import java.util.Spliterator;
+import java.util.Spliterators;
+import java.util.function.Consumer;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
+import java.util.stream.StreamSupport;
 
 /**
- * Decora um {@link ObjectStorage}, medindo cada operação em {@code storage.operations}
- * (tags {@code operation}, {@code storage}, {@code outcome}). Os métodos com default no
- * próprio {@link ObjectStorage} (ex.: {@code read}, {@code listDirectory}, {@code deleteAll})
- * não são medidos aqui: chamam os métodos abaixo, que já são.
+ * Decora um {@link ObjectStorage}, observando cada operação em {@code storage.operations}
+ * (tags {@code operation}, {@code storage}, {@code outcome}). Com o handler de métricas do Boot,
+ * a observação vira o timer {@code storage.operations}; com Micrometer Tracing, vira também um
+ * span ({@code storage put}, {@code storage head}...), filho da observação corrente da thread.
+ * Os métodos com default no próprio {@link ObjectStorage} (ex.: {@code read}, {@code listDirectory},
+ * {@code deleteAll}) não são medidos aqui: chamam os métodos abaixo, que já são.
  *
- * <p>{@code list} mede só a chamada que abre o stream; consumi-lo é responsabilidade de quem
- * chamou. Partes de multipart ({@link MultipartSession#uploadPart}) não são medidas.</p>
+ * <p>{@code outcome} é {@code success}, {@code not_found} ({@link ObjectNotFoundException}, que
+ * não marca o span como erro) ou {@code error}.</p>
+ *
+ * <p>{@code open} e {@code list} medem até o fim do consumo: o fim do stream, um erro de leitura
+ * ou o {@code close}, o que vier primeiro. Um stream abandonado sem fechar nem esgotar nunca encerra
+ * a observação. Partes de multipart ({@link MultipartSession#uploadPart}) não são medidas.</p>
  */
-class ObjectStorageMetrics implements ObjectStorage {
+class ObjectStorageMetrics implements DelegatingObjectStorage {
 
     private final ObjectStorage delegate;
-    private final MeterRegistry registry;
+    private final ObservationRegistry registry;
     private final String storageName;
 
-    ObjectStorageMetrics(ObjectStorage delegate, MeterRegistry registry, String storageName) {
+    ObjectStorageMetrics(ObjectStorage delegate, ObservationRegistry registry, String storageName) {
         this.delegate = delegate;
         this.registry = registry;
         this.storageName = storageName;
     }
 
-    private <T> T timed(String operation, Supplier<T> call) {
-        Timer.Sample sample = Timer.start(registry);
+    @Override
+    public ObjectStorage delegate() {
+        return delegate;
+    }
+
+    private Observation start(String operation) {
+        return Observation.createNotStarted("storage.operations", registry)
+                .contextualName("storage " + operation)
+                .lowCardinalityKeyValue("operation", operation)
+                .lowCardinalityKeyValue("storage", storageName)
+                .start();
+    }
+
+    private static void stop(Observation observation, Throwable failure) {
         String outcome = "success";
-        try {
+        if (failure instanceof ObjectNotFoundException) {
+            outcome = "not_found";
+        } else if (failure != null) {
+            outcome = "error";
+            observation.error(failure);
+        }
+        observation.lowCardinalityKeyValue("outcome", outcome).stop();
+    }
+
+    private <T> T timed(String operation, Supplier<T> call) {
+        Observation observation = start(operation);
+        RuntimeException failure = null;
+        try (Observation.Scope scope = observation.openScope()) {
             return call.get();
         } catch (RuntimeException e) {
-            outcome = "error";
+            failure = e;
             throw e;
         } finally {
-            sample.stop(Timer.builder("storage.operations")
-                    .tag("operation", operation)
-                    .tag("storage", storageName)
-                    .tag("outcome", outcome)
-                    .register(registry));
+            stop(observation, failure);
+        }
+    }
+
+    /** Como {@link #timed}, mas só encerra a observação na falha: no sucesso, quem consome encerra. */
+    private static <T> T opened(Observation observation, Supplier<T> call) {
+        try (Observation.Scope scope = observation.openScope()) {
+            return call.get();
+        } catch (RuntimeException e) {
+            stop(observation, e);
+            throw e;
         }
     }
 
@@ -73,7 +116,8 @@ class ObjectStorageMetrics implements ObjectStorage {
 
     @Override
     public InputStream open(String key, ByteRange range) {
-        return timed("open", () -> delegate.open(key, range));
+        Observation observation = start("open");
+        return new ObservedInputStream(opened(observation, () -> delegate.open(key, range)), new Ending(observation));
     }
 
     @Override
@@ -86,7 +130,12 @@ class ObjectStorageMetrics implements ObjectStorage {
 
     @Override
     public Stream<ObjectSummary> list(String prefix) {
-        return timed("list", () -> delegate.list(prefix));
+        Observation observation = start("list");
+        Stream<ObjectSummary> objects = opened(observation, () -> delegate.list(prefix));
+        Ending ending = new Ending(observation);
+        return StreamSupport.stream(new ObservedSpliterator<>(objects.spliterator(), ending), false)
+                .onClose(objects::close)
+                .onClose(() -> ending.stop(null));
     }
 
     @Override
@@ -118,5 +167,105 @@ class ObjectStorageMetrics implements ObjectStorage {
     @Override
     public PresignedRequest presignPut(String key, Duration ttl, PutOptions options) {
         return timed("presignPut", () -> delegate.presignPut(key, ttl, options));
+    }
+
+    /** Encerra a observação uma única vez, no primeiro evento: fim, erro ou close. */
+    private static final class Ending {
+
+        private final Observation observation;
+        private boolean stopped;
+
+        Ending(Observation observation) {
+            this.observation = observation;
+        }
+
+        void stop(Throwable failure) {
+            if (!stopped) {
+                stopped = true;
+                ObjectStorageMetrics.stop(observation, failure);
+            }
+        }
+    }
+
+    private static final class ObservedInputStream extends FilterInputStream {
+
+        private final Ending ending;
+
+        ObservedInputStream(InputStream in, Ending ending) {
+            super(in);
+            this.ending = ending;
+        }
+
+        @Override
+        public int read() throws IOException {
+            try {
+                return ended(in.read());
+            } catch (IOException | RuntimeException e) {
+                ending.stop(e);
+                throw e;
+            }
+        }
+
+        @Override
+        public int read(byte[] b, int off, int len) throws IOException {
+            try {
+                return ended(in.read(b, off, len));
+            } catch (IOException | RuntimeException e) {
+                ending.stop(e);
+                throw e;
+            }
+        }
+
+        private int ended(int result) {
+            if (result < 0) {
+                ending.stop(null);
+            }
+            return result;
+        }
+
+        @Override
+        public void close() throws IOException {
+            try {
+                in.close();
+            } catch (IOException | RuntimeException e) {
+                ending.stop(e);
+                throw e;
+            }
+            ending.stop(null);
+        }
+    }
+
+    private static final class ObservedSpliterator<T> extends Spliterators.AbstractSpliterator<T> {
+
+        private final Spliterator<T> source;
+        private final Ending ending;
+
+        ObservedSpliterator(Spliterator<T> source, Ending ending) {
+            super(source.estimateSize(), source.characteristics());
+            this.source = source;
+            this.ending = ending;
+        }
+
+        @Override
+        public boolean tryAdvance(Consumer<? super T> action) {
+            // Exceção do action é de quem consome, não do storage: não vira outcome=error.
+            boolean[] inAction = {false};
+            try {
+                boolean more = source.tryAdvance(item -> {
+                    inAction[0] = true;
+                    action.accept(item);
+                    inAction[0] = false;
+                });
+                if (!more) {
+                    ending.stop(null);
+                }
+                return more;
+            } catch (RuntimeException e) {
+                if (!inAction[0]) {
+                    ending.stop(e);
+                }
+                throw e;
+            }
+        }
     }
 }

@@ -38,8 +38,14 @@ public class StorageHealthAutoConfiguration {
         @ConditionalOnMissingBean(name = "storageHealthIndicator")
         HealthContributor storageHealthIndicator(Map<String, ObjectStorage> storages) {
             return storages.size() == 1
-                    ? new ObjectStorageHealthIndicator(storages.values().iterator().next())
-                    : CompositeHealthContributor.fromMap(storages, ObjectStorageHealthIndicator::new);
+                    ? indicator(storages.values().iterator().next())
+                    : CompositeHealthContributor.fromMap(storages, StorageHealthIndicatorConfiguration::indicator);
+        }
+
+        // Sem o decorador de métricas: cada probe viraria um span e uma amostra em storage.operations.
+        private static ObjectStorageHealthIndicator indicator(ObjectStorage storage) {
+            return new ObjectStorageHealthIndicator(
+                    storage instanceof DelegatingObjectStorage decorated ? decorated.delegate() : storage);
         }
     }
 }
