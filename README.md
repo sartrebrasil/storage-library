@@ -292,11 +292,29 @@ declarado pela aplicação. Com vários `ObjectStorage` (um por bucket), o indic
 composto, um por bean, na chave do nome do bean (`/actuator/health/storage/reportsStorage`);
 qualquer bucket `DOWN` deixa `storage` `DOWN`. Desligue com `management.health.storage.enabled=false`.
 
-Com um `MeterRegistry` no contexto (Actuator + registro de métricas, ex.: Prometheus), o starter
-decora todo `ObjectStorage` e mede cada operação em `storage.operations` (tags `operation` —
-`put`, `head`, `open`, `list`, `delete`, `copy`, `checkAccess`...—, `storage` com o nome do bean,
-e `outcome`, `success` ou `error`). Sem `MeterRegistry` no classpath ou no contexto, não decora
-nada.
+Com um `ObservationRegistry` no contexto (o Actuator cria um), o starter decora todo
+`ObjectStorage` e observa cada operação em `storage.operations` (tags `operation` — `put`,
+`head`, `open`, `list`, `delete`, `copy`, `checkAccess`...—, `storage` com o nome do bean,
+`outcome`, e `error` com a classe da exceção, ou `none`). `outcome` é `success`, `not_found`
+(`ObjectNotFoundException`, sem marcar o span como erro) ou `error`. Com um registro de métricas
+(ex.: Prometheus), a observação vira o timer `storage.operations`; com Micrometer Tracing, vira
+também um span (`storage put`, `storage head`...), filho do span corrente da thread: chamada de
+dentro de uma requisição ou listener já rastreado fica no mesmo trace. Em outra thread
+(`@Async`, executor próprio), o trace só continua se o executor propagar o contexto
+(`ContextExecutorService.wrap`, do context-propagation).
+
+`open` e `list` medem até o fim do consumo (fim do stream, erro de leitura ou `close`), não só a
+abertura; feche o stream, ou a observação não termina. O health check usa o `ObjectStorage` sem o
+decorador, para os probes não gerarem spans nem amostras. Sem `ObservationRegistry` no classpath
+ou no contexto, não decora nada. O decorador esconde o tipo concreto:
+`getBean(S3ObjectStorage.class)` não encontra o bean; injete `ObjectStorage`.
+
+Percentis e SLOs são configuração do consumidor, sem código:
+
+```properties
+management.metrics.distribution.percentiles-histogram.storage.operations=true
+management.metrics.distribution.slo.storage.operations=100ms,500ms,2s
+```
 
 No S3, o cliente e o presigner usam o mesmo bean `AwsCredentialsProvider`: credencial
 estática com `access-key`, senão a cadeia padrão da AWS. Na cadeia padrão, credenciais
