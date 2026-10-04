@@ -12,8 +12,8 @@ import com.example.storage.PreconditionFailedException;
 import com.example.storage.PresignedRequest;
 import com.example.storage.PutOptions;
 import com.example.storage.StorageException;
+import com.example.storage.StorageStreams;
 
-import java.io.FilterInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -129,7 +129,7 @@ public final class FileSystemObjectStorage implements ObjectStorage {
                 in.close();
                 throw e;
             }
-            return new BoundedInputStream(in, resolved.length());
+            return StorageStreams.bounded(in, resolved.length());
         } catch (IOException e) {
             throw new StorageException("Falha ao abrir " + key, e);
         }
@@ -416,41 +416,6 @@ public final class FileSystemObjectStorage implements ObjectStorage {
             Files.deleteIfExists(path);
         } catch (IOException ignored) {
             // a falha que importa é a original da escrita
-        }
-    }
-
-    /** Limita a leitura a {@code remaining} bytes, sem carregar a faixa em memória. */
-    private static final class BoundedInputStream extends FilterInputStream {
-
-        private long remaining;
-
-        BoundedInputStream(InputStream in, long remaining) {
-            super(in);
-            this.remaining = remaining;
-        }
-
-        @Override
-        public int read() throws IOException {
-            if (remaining <= 0) {
-                return -1;
-            }
-            int b = super.read();
-            if (b >= 0) {
-                remaining--;
-            }
-            return b;
-        }
-
-        @Override
-        public int read(byte[] b, int off, int len) throws IOException {
-            if (remaining <= 0) {
-                return -1;
-            }
-            int n = super.read(b, off, (int) Math.min(len, remaining));
-            if (n > 0) {
-                remaining -= n;
-            }
-            return n;
         }
     }
 }

@@ -2,6 +2,9 @@ package com.example.storage;
 
 import org.junit.jupiter.api.Test;
 
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
+import java.io.InputStream;
 import java.util.List;
 import java.util.stream.Stream;
 
@@ -38,5 +41,23 @@ class StorageStreamsTest {
         });
         assertThrows(IllegalStateException.class,
                 () -> StorageStreams.translating(failing, SdkFailure.class, e -> new StorageException("x", e)).toList());
+    }
+
+    @Test
+    void boundedNaoPassaDoLimiteNemComSkip() throws IOException {
+        InputStream bounded = StorageStreams.bounded(new ByteArrayInputStream("0123456789".getBytes()), 4);
+
+        assertEquals(2, bounded.skip(2));
+        assertEquals(2, bounded.available());
+        assertEquals(2, bounded.skip(10), "skip para no limite");
+        assertEquals(-1, bounded.read());
+        assertFalse(bounded.markSupported());
+    }
+
+    @Test
+    void boundedLeSoAFaixa() throws IOException {
+        InputStream bounded = StorageStreams.bounded(new ByteArrayInputStream("0123456789".getBytes()), 4);
+
+        assertArrayEquals("0123".getBytes(), bounded.readAllBytes());
     }
 }
