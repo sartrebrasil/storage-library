@@ -67,10 +67,11 @@ import java.util.stream.Stream;
  * sincroniza no próprio processo (ver {@code put}), então duas instâncias (ou dois processos)
  * apontando pro mesmo {@code root} não se enxergam.</p>
  *
- * <p>Cada operação abre seu próprio canal SFTP ({@link SSHClient#newSFTPClient()}): um
- * {@link SFTPClient} não é seguro para uso concorrente por várias threads (o canal SSH
- * subjacente é, por isso é reaproveitado). {@link #open} mantém o canal aberto até o
- * {@code InputStream} devolvido ser fechado.</p>
+ * <p>Cada operação abre seu próprio canal SFTP: um {@link SFTPClient} não é seguro para uso
+ * concorrente por várias threads (a conexão SSH subjacente é, por isso é reaproveitada).
+ * {@link #open} mantém o canal aberto até o {@code InputStream} devolvido ser fechado. Os canais
+ * vêm de uma {@link SftpConnection}, que limita quantos ficam abertos ao mesmo tempo e pode
+ * reconectar; vários buckets no mesmo servidor devem compartilhar a mesma.</p>
  *
  * <p>Uploads multipart gravam cada parte em {@code .uploads/<uploadId>/part-<n>} e concatenam
  * os arquivos em {@link MultipartSession#complete}, lendo e escrevendo em streaming.</p>
@@ -86,11 +87,19 @@ public final class SftpObjectStorage implements ObjectStorage {
     private static final String TEMP_PREFIX = ".pending-";
     static final String UPLOADS_DIR = ".uploads";
 
-    private final SSHClient sshClient;
+    private final SftpConnection connection;
     private final String root;
 
+    /**
+     * Sobre um {@link SSHClient} já conectado, sem reconexão e com o próprio limite de canais. Para vários
+     * buckets no mesmo servidor, ou para reconectar, use {@link #SftpObjectStorage(SftpConnection, String)}.
+     */
     public SftpObjectStorage(SSHClient sshClient, String root) {
-        this.sshClient = Objects.requireNonNull(sshClient, "sshClient");
+        this(SftpConnection.of(sshClient), root);
+    }
+
+    public SftpObjectStorage(SftpConnection connection, String root) {
+        this.connection = Objects.requireNonNull(connection, "connection");
         Objects.requireNonNull(root, "root");
         this.root = root.length() > 1 && root.endsWith("/") ? root.substring(0, root.length() - 1) : root;
         if (!this.root.startsWith("/")) {
@@ -120,7 +129,7 @@ public final class SftpObjectStorage implements ObjectStorage {
         String target = resolve(key);
         String uploadId = UUID.randomUUID().toString();
         String uploadDir = root + "/" + UPLOADS_DIR + "/" + uploadId;
-        return new SftpMultipartSession(sshClient, target, uploadDir, key, uploadId, metadata);
+        return new SftpMultipartSession(connection, target, uploadDir, key, uploadId, metadata);
     }
 
     @Override
@@ -149,23 +158,23 @@ public final class SftpObjectStorage implements ObjectStorage {
     @Override
     public InputStream open(String key, ByteRange range) {
         String path = resolve(key);
-        SFTPClient sftp = null;
+        SftpConnection.Channel channel = null;
         RemoteFile file = null;
         try {
-            sftp = sshClient.newSFTPClient();
-            file = sftp.open(path, Set.of(OpenMode.READ));
+            channel = connection.open();
+            file = channel.sftp().open(path, Set.of(OpenMode.READ));
             long size = file.length();
             ByteRange resolved = range.resolve(size);
             InputStream body = resolved.isAll() ? file.new RemoteFileInputStream()
                     : new BoundedInputStream(file.new RemoteFileInputStream(resolved.offset()), resolved.length());
-            return new ClosingInputStream(body, file, sftp);
+            return new ClosingInputStream(body, file, channel);
         } catch (IOException e) {
             closeQuietly(file);
-            closeQuietly(sftp);
+            closeQuietly(channel);
             throw translate(e, "Falha ao abrir " + key);
         } catch (RuntimeException e) {
             closeQuietly(file);
-            closeQuietly(sftp);
+            closeQuietly(channel);
             throw e;
         }
     }
@@ -522,15 +531,16 @@ public final class SftpObjectStorage implements ObjectStorage {
 
     private URI sftpUri(String path) {
         try {
-            return new URI("sftp", null, sshClient.getRemoteHostname(), sshClient.getRemotePort(), path, null, null);
+            SSHClient client = connection.current();
+            return new URI("sftp", null, client.getRemoteHostname(), client.getRemotePort(), path, null, null);
         } catch (URISyntaxException e) {
             throw new IllegalStateException(e);
         }
     }
 
     private <T> T withSftp(String errorMessage, SftpAction<T> action) {
-        try (SFTPClient sftp = sshClient.newSFTPClient()) {
-            return action.run(sftp);
+        try (SftpConnection.Channel channel = connection.open()) {
+            return action.run(channel.sftp());
         } catch (IOException e) {
             throw translate(e, errorMessage);
         }
@@ -603,19 +613,19 @@ public final class SftpObjectStorage implements ObjectStorage {
     private static final class ClosingInputStream extends FilterInputStream {
 
         private final RemoteFile file;
-        private final SFTPClient sftp;
+        private final SftpConnection.Channel channel;
 
-        ClosingInputStream(InputStream in, RemoteFile file, SFTPClient sftp) {
+        ClosingInputStream(InputStream in, RemoteFile file, SftpConnection.Channel channel) {
             super(in);
             this.file = file;
-            this.sftp = sftp;
+            this.channel = channel;
         }
 
         @Override
         public void close() throws IOException {
             // Ordem importa: try-with-resources fecha na ordem inversa da declaração, e o
-            // RemoteFile precisa mandar seu SSH_FXP_CLOSE antes do canal (SFTPClient) morrer.
-            try (SFTPClient s = sftp; RemoteFile f = file) {
+            // RemoteFile precisa mandar seu SSH_FXP_CLOSE antes do canal morrer.
+            try (SftpConnection.Channel c = channel; RemoteFile f = file) {
                 super.close();
             }
         }
