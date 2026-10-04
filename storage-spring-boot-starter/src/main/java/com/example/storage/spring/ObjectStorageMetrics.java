@@ -24,6 +24,7 @@ import java.util.Collection;
 import java.util.Optional;
 import java.util.Spliterator;
 import java.util.Spliterators;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
@@ -83,10 +84,10 @@ class ObjectStorageMetrics implements DelegatingObjectStorage {
 
     private <T> T timed(String operation, Supplier<T> call) {
         Observation observation = start(operation);
-        RuntimeException failure = null;
+        Throwable failure = null;
         try (Observation.Scope scope = observation.openScope()) {
             return call.get();
-        } catch (RuntimeException e) {
+        } catch (RuntimeException | Error e) {
             failure = e;
             throw e;
         } finally {
@@ -98,7 +99,7 @@ class ObjectStorageMetrics implements DelegatingObjectStorage {
     private static <T> T opened(Observation observation, Supplier<T> call) {
         try (Observation.Scope scope = observation.openScope()) {
             return call.get();
-        } catch (RuntimeException e) {
+        } catch (RuntimeException | Error e) {
             stop(observation, e);
             throw e;
         }
@@ -200,15 +201,15 @@ class ObjectStorageMetrics implements DelegatingObjectStorage {
     private static final class Ending {
 
         private final Observation observation;
-        private boolean stopped;
+        // O corpo pode ser fechado por outra thread (timeout do container) enquanto a de I/O chega ao fim.
+        private final AtomicBoolean stopped = new AtomicBoolean();
 
         Ending(Observation observation) {
             this.observation = observation;
         }
 
         void stop(Throwable failure) {
-            if (!stopped) {
-                stopped = true;
+            if (stopped.compareAndSet(false, true)) {
                 ObjectStorageMetrics.stop(observation, failure);
             }
         }
@@ -268,7 +269,8 @@ class ObjectStorageMetrics implements DelegatingObjectStorage {
         private final Ending ending;
 
         ObservedSpliterator(Spliterator<T> source, Ending ending) {
-            super(source.estimateSize(), source.characteristics());
+            // Sem SIZED: com ele, count() responde sem percorrer e a observação não terminaria.
+            super(source.estimateSize(), source.characteristics() & ~(SIZED | SUBSIZED));
             this.source = source;
             this.ending = ending;
         }

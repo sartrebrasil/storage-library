@@ -82,6 +82,13 @@ public record StorageProperties(Provider provider,
         private static String blankToNull(String value) {
             return value == null || value.isBlank() ? null : value;
         }
+
+        @Override
+        public String toString() {
+            return "S3[region=" + region + ", endpoint=" + endpoint + ", pathStyle=" + pathStyle
+                    + ", accessKey=" + accessKey + ", secretKey=" + mask(secretKey) + ", checksum=" + checksum
+                    + ", asyncCredentialUpdate=" + asyncCredentialUpdate + "]";
+        }
     }
 
     /**
@@ -97,6 +104,12 @@ public record StorageProperties(Provider provider,
      * @param endpoint ex.: {@code https://conta.blob.core.windows.net}
      */
     public record Azure(String connectionString, String endpoint) {
+
+        /** A connection string carrega a {@code AccountKey}. */
+        @Override
+        public String toString() {
+            return "Azure[connectionString=" + mask(connectionString) + ", endpoint=" + endpoint + "]";
+        }
     }
 
     /**
@@ -152,5 +165,18 @@ public record StorageProperties(Provider provider,
         private static String blankToNull(String value) {
             return value == null || value.isBlank() ? null : value;
         }
+
+        @Override
+        public String toString() {
+            return "Sftp[host=" + host + ", port=" + port + ", username=" + username + ", password=" + mask(password)
+                    + ", privateKeyPath=" + privateKeyPath + ", root=" + root + ", knownHosts=" + knownHosts
+                    + ", insecureTrustAllHosts=" + insecureTrustAllHosts + ", keepAlive=" + keepAlive
+                    + ", maxChannels=" + maxChannels + "]";
+        }
+    }
+
+    /** O {@code toString} de um record mostraria o segredo em qualquer log das properties. */
+    private static String mask(String secret) {
+        return secret == null ? "null" : "****";
     }
 }

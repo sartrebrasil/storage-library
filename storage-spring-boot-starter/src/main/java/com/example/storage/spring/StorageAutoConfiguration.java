@@ -25,6 +25,7 @@ import org.springframework.beans.factory.BeanFactory;
 import org.springframework.beans.factory.BeanFactoryAware;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.config.ConfigurableListableBeanFactory;
 import org.springframework.beans.factory.support.AutowireCandidateQualifier;
 import org.springframework.beans.factory.support.BeanDefinitionRegistry;
 import org.springframework.beans.factory.support.RootBeanDefinition;
@@ -47,6 +48,7 @@ import org.springframework.context.annotation.ImportBeanDefinitionRegistrar;
 import org.springframework.core.env.Environment;
 import org.springframework.core.type.AnnotatedTypeMetadata;
 import org.springframework.core.type.AnnotationMetadata;
+import org.springframework.util.ClassUtils;
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
 import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
 import software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider;
@@ -226,15 +228,23 @@ public class StorageAutoConfiguration {
     @ConditionalOnProperty(prefix = PREFIX, name = "provider", havingValue = "azure")
     static class AzureStorageConfiguration {
 
+        private static final String AZURE_CREDENTIAL = "com.azure.identity.DefaultAzureCredentialBuilder";
+
         /** Cliente da conta, sem container: a aplicação deriva um {@code BlobContainerClient} por container. */
         @Bean
         @ConditionalOnMissingBean
-        BlobServiceClient azureBlobServiceClient(StorageProperties properties) {
+        BlobServiceClient azureBlobServiceClient(StorageProperties properties,
+                                                 ConfigurableListableBeanFactory beanFactory) {
             StorageProperties.Azure azure = properties.azure();
             BlobServiceClientBuilder builder = new BlobServiceClientBuilder();
             if (azure.connectionString() != null) {
                 builder.connectionString(azure.connectionString());
             } else if (azure.endpoint() != null) {
+                // azure-identity é opcional: sem ela, o NoClassDefFoundError não diria o que falta
+                if (!ClassUtils.isPresent(AZURE_CREDENTIAL, beanFactory.getBeanClassLoader())) {
+                    throw new IllegalStateException("storage.azure.endpoint usa DefaultAzureCredential: adicione a "
+                            + "dependência com.azure:azure-identity, ou use storage.azure.connection-string");
+                }
                 builder.endpoint(azure.endpoint()).credential(new DefaultAzureCredentialBuilder().build());
             } else {
                 throw new IllegalStateException(

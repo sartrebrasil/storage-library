@@ -136,6 +136,41 @@ class StorageMetricsAutoConfigurationTest {
     }
 
     @Test
+    void errorDoAdapterNaoContaComoSucesso() {
+        ObjectStorage broken = org.mockito.Mockito.mock(ObjectStorage.class);
+        org.mockito.Mockito.doThrow(new LinkageError("classe ausente")).when(broken).delete("k");
+
+        runner.withUserConfiguration(Observations.class)
+                .withBean(ObjectStorage.class, () -> broken)
+                .run(context -> {
+                    assertThatThrownBy(() -> context.getBean(ObjectStorage.class).delete("k"))
+                            .isInstanceOf(LinkageError.class);
+
+                    MeterRegistry registry = context.getBean(MeterRegistry.class);
+                    assertThat(registry.get("storage.operations").tag("operation", "delete").tag("outcome", "error")
+                            .timer().count()).isEqualTo(1);
+                });
+    }
+
+    @Test
+    void countDeUmListComTamanhoConhecidoEncerraAObservacao() {
+        ObjectStorage adapter = org.mockito.Mockito.mock(ObjectStorage.class);
+        org.mockito.Mockito.when(adapter.list("")).thenAnswer(inv -> List.of(
+                new ObjectSummary("a", 1, "v", null), new ObjectSummary("b", 1, "v", null)).stream());
+
+        runner.withUserConfiguration(Observations.class)
+                .withBean(ObjectStorage.class, () -> adapter)
+                .run(context -> {
+                    // Sem close: um stream SIZED responderia count() sem percorrer, e a observação ficaria aberta.
+                    assertThat(context.getBean(ObjectStorage.class).list("").count()).isEqualTo(2);
+
+                    MeterRegistry registry = context.getBean(MeterRegistry.class);
+                    assertThat(registry.get("storage.operations").tag("operation", "list").timer().count())
+                            .isEqualTo(1);
+                });
+    }
+
+    @Test
     void semObservationRegistryNaoDecora() {
         runner.withBean(ObjectStorage.class, InMemoryObjectStorage::new)
                 .run(context -> assertThat(context.getBean(ObjectStorage.class))
