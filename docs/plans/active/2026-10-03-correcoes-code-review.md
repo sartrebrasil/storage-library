@@ -1,6 +1,6 @@
 # Plano: correções do code review completo
 
-- **Status:** ativo; R0 concluída; R1 em andamento
+- **Status:** ativo; R0 e R1 concluídas; próxima: R2
 - **Criado em:** 03/10/2026
 - **Origem:** code review completo dos 11 módulos (commit `f0884ec`). Itens marcados com ✔ foram
   confirmados no código ou nos fontes dos SDKs em `~/.m2` (AWS 2.55, GCS 2.74, Azure Blob 12.35,
@@ -28,7 +28,7 @@ reduzir a duplicação entre adapters e fechar as lacunas de teste que deixaram 
 | Fase | Entrega | Itens | Depende de | Status |
 |---|---|---|---|---|
 | R0 | Críticos: perda de dados e recursos quebrados | C1–C6 | — | Concluída |
-| R1 | Core e contrato de exceções | A1–A3 | — | Em andamento |
+| R1 | Core e contrato de exceções | A1–A3 | — | Concluída |
 | R2 | Integridade em filesystem e SFTP | A5–A8, M7–M9 | R1 (A1) | Pendente |
 | R3 | Adapters de nuvem | A4, A10, A11, M3–M6 | R1 (A3) | Pendente |
 | R4 | SFTP operacional | A9, M10 | R2 | Pendente |
@@ -140,3 +140,8 @@ reduzir a duplicação entre adapters e fechar as lacunas de teste que deixaram 
 - **04/10/2026 — A2 decidido.** Na leitura, a metadata do provedor é devolvida como veio, mesmo fora
   das regras da lib (`goog-reserved-file-mtime`, `s3cmd-attrs`, maiúsculas no Azure). A validação
   continua só na escrita.
+- **04/10/2026 — R1 concluída.** A1: o construtor de `ByteRange` corta a faixa no maior fim representável,
+  único ponto por onde passam todos os chamadores; teste de contrato com `ByteRange.of(5, Long.MAX_VALUE)`.
+  A2: a validação saiu do construtor de `ObjectMetadata` para `requireWritable()`, chamado por `PutOptions`
+  e pelo `initiateMultipart` de cada adapter; teste de contrato garante a falha antes do envio. A3: as
+  sessões multipart de S3, GCS, Azure e OCI usam o `translate` do adapter.
