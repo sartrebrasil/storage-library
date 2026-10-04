@@ -115,6 +115,7 @@ public final class AzureBlobObjectStorage implements ObjectStorage {
 
     @Override
     public MultipartSession initiateMultipart(String key, ObjectMetadata metadata) {
+        metadata.requireWritable();
         return new AzureBlobMultipartSession(blob(key).getBlockBlobClient(),
                 key, UUID.randomUUID().toString(), metadata);
     }

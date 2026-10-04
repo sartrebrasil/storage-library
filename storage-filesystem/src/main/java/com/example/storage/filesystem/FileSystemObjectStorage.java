@@ -77,6 +77,7 @@ public final class FileSystemObjectStorage implements ObjectStorage {
 
     @Override
     public MultipartSession initiateMultipart(String key, ObjectMetadata metadata) {
+        metadata.requireWritable();
         Path target = resolve(key);
         String uploadId = UUID.randomUUID().toString();
         Path uploadDir = root.resolve(UPLOADS_DIR).resolve(uploadId);

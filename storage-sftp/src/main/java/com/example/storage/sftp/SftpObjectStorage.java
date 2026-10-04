@@ -110,6 +110,7 @@ public final class SftpObjectStorage implements ObjectStorage {
 
     @Override
     public MultipartSession initiateMultipart(String key, ObjectMetadata metadata) {
+        metadata.requireWritable();
         String target = resolve(key);
         String uploadId = UUID.randomUUID().toString();
         String uploadDir = root + "/" + UPLOADS_DIR + "/" + uploadId;
