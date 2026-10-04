@@ -26,6 +26,9 @@ import software.amazon.awssdk.services.s3.model.CompletedPart;
 import software.amazon.awssdk.services.s3.model.CreateMultipartUploadRequest;
 import software.amazon.awssdk.services.s3.model.CreateMultipartUploadResponse;
 import software.amazon.awssdk.services.s3.model.CopyObjectRequest;
+import software.amazon.awssdk.services.s3.model.DeleteObjectsRequest;
+import software.amazon.awssdk.services.s3.model.DeleteObjectsResponse;
+import software.amazon.awssdk.services.s3.model.S3Error;
 import software.amazon.awssdk.services.s3.model.GetObjectRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectResponse;
 import software.amazon.awssdk.services.s3.model.HeadObjectRequest;
@@ -325,6 +328,28 @@ class S3ObjectStorageTest {
 
         assertEquals(StorageException.class, e.getClass());
         verify(connection).abort();
+    }
+
+    @Test
+    void abortEListPartsSaoIdempotentesComQualquer404DeUpload() {
+        // Backends compatíveis respondem 404 sem o código NoSuchUpload que vira NoSuchUploadException.
+        S3Exception gone = (S3Exception) S3Exception.builder().statusCode(404).message("gone").build();
+        when(s3.abortMultipartUpload(any(AbortMultipartUploadRequest.class))).thenThrow(gone);
+
+        assertDoesNotThrow(session::abort);
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void falhaDeUmaChaveNoDeleteAllMantemOTipo() {
+        when(s3.deleteObjects(any(DeleteObjectsRequest.class))).thenReturn(DeleteObjectsResponse.builder()
+                .errors(S3Error.builder().key("negado").code("AccessDenied").message("denied").build()).build());
+        doCallRealMethod().when(s3).deleteObjects(any(Consumer.class));
+        S3ObjectStorage storage = new S3ObjectStorage(s3, mock(S3Presigner.class), "bucket");
+
+        var result = storage.deleteAll(List.of("ok", "negado"));
+
+        assertInstanceOf(AccessDeniedException.class, result.failures().get("negado"));
     }
 
     @Test
