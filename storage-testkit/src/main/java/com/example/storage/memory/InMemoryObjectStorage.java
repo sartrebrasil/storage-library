@@ -19,7 +19,6 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.UncheckedIOException;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.time.Duration;
@@ -56,7 +55,7 @@ public final class InMemoryObjectStorage implements ObjectStorage {
         try {
             bytes = data.readAllBytes();
         } catch (IOException e) {
-            throw new UncheckedIOException(e);
+            throw new StorageException("Falha ao ler o conteúdo de " + key, e);
         }
         if (bytes.length != length) {
             throw new StorageException("Tamanho informado (" + length + ") difere do conteúdo ("
@@ -190,17 +189,22 @@ public final class InMemoryObjectStorage implements ObjectStorage {
 
         @Override
         public UploadedPart uploadPart(int partNumber, byte[] data, int length) {
+            requireActive();
             parts.put(partNumber, Arrays.copyOf(data, length));   // copia: o buffer será reutilizado
             return new UploadedPart(partNumber, "etag-" + partNumber, null);
         }
 
         @Override
         public void complete(List<UploadedPart> uploaded) {
+            requireActive();
             List<UploadedPart> sorted = uploaded.stream()
                     .sorted(Comparator.comparingInt(UploadedPart::partNumber)).toList();
             ByteArrayOutputStream out = new ByteArrayOutputStream();
             for (int i = 0; i < sorted.size(); i++) {
                 byte[] part = parts.get(sorted.get(i).partNumber());
+                if (part == null) {
+                    throw new StorageException("InvalidPart: parte " + sorted.get(i).partNumber() + " não enviada", null);
+                }
                 boolean last = i == sorted.size() - 1;
                 if (!last && part.length < MultipartConfig.MIN_PART_SIZE) {
                     throw new StorageException("EntityTooSmall: parte " + (i + 1), null);
@@ -215,6 +219,13 @@ public final class InMemoryObjectStorage implements ObjectStorage {
         public void abort() {
             parts.clear();
             activeUploads.remove(uploadId);
+        }
+
+        /** Como o S3: um upload concluído ou abortado responde NoSuchUpload. */
+        private void requireActive() {
+            if (!activeUploads.contains(uploadId)) {
+                throw new StorageException("NoSuchUpload: " + uploadId + " já foi concluído ou abortado", null);
+            }
         }
 
         @Override

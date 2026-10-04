@@ -39,12 +39,20 @@ public record ObjectContent(InputStream stream, ByteRange range, long totalSize)
         int space = value.indexOf(' ');
         int dash = value.indexOf('-', space);
         int slash = value.indexOf('/', dash);
-        if (space < 0 || dash < 0 || slash < 0) {
-            throw new IllegalArgumentException("Content-Range malformado: " + contentRange);
+        long first;
+        long last;
+        long total;
+        try {
+            if (space < 0 || dash < 0 || slash < 0) {
+                throw new NumberFormatException();
+            }
+            first = Long.parseLong(value.substring(space + 1, dash).strip());
+            last = Long.parseLong(value.substring(dash + 1, slash).strip());
+            total = Long.parseLong(value.substring(slash + 1).strip());   // "*" (tamanho desconhecido) também
+        } catch (NumberFormatException e) {
+            closeQuietly(stream);
+            throw new IllegalArgumentException("Content-Range malformado: " + contentRange, e);
         }
-        long first = Long.parseLong(value.substring(space + 1, dash).strip());
-        long last = Long.parseLong(value.substring(dash + 1, slash).strip());
-        long total = Long.parseLong(value.substring(slash + 1).strip());
         if (last < first || total == 0) {
             // MinIO responde 206 com "bytes 0--1/0" a uma faixa num objeto vazio, em vez de 416
             closeQuietly(stream);
