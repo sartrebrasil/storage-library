@@ -294,7 +294,7 @@ qualquer bucket `DOWN` deixa `storage` `DOWN`. Desligue com `management.health.s
 
 Com um `ObservationRegistry` no contexto (o Actuator cria um), o starter decora todo
 `ObjectStorage` e observa cada operação em `storage.operations` (tags `operation` — `put`,
-`head`, `open`, `list`, `delete`, `copy`, `checkAccess`...—, `storage` com o nome do bean,
+`head`, `open`, `read`, `list`, `listDirectory`, `delete`, `deleteAll`, `copy`, `checkAccess`...—, `storage` com o nome do bean,
 `outcome`, e `error` com a classe da exceção, ou `none`). `outcome` é `success`, `not_found`
 (`ObjectNotFoundException`, sem marcar o span como erro) ou `error`. Com um registro de métricas
 (ex.: Prometheus), a observação vira o timer `storage.operations`; com Micrometer Tracing, vira
@@ -303,7 +303,9 @@ dentro de uma requisição ou listener já rastreado fica no mesmo trace. Em out
 (`@Async`, executor próprio), o trace só continua se o executor propagar o contexto
 (`ContextExecutorService.wrap`, do context-propagation).
 
-`open` e `list` medem até o fim do consumo (fim do stream, erro de leitura ou `close`), não só a
+O decorador repassa ao adapter também os métodos com default na interface (`read`,
+`listDirectory`, `deleteAll`), para não trocar as versões nativas (uma leitura só, delimiter,
+lote) pelos defaults. `open`, `read`, `list` e `listDirectory` medem até o fim do consumo (fim do stream, erro de leitura ou `close`), não só a
 abertura; feche o stream, ou a observação não termina. O health check usa o `ObjectStorage` sem o
 decorador, para os probes não gerarem spans nem amostras. Sem `ObservationRegistry` no classpath
 ou no contexto, não decora nada. O decorador esconde o tipo concreto:
