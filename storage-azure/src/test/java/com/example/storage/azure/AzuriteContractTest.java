@@ -18,9 +18,10 @@ class AzuriteContractTest extends ObjectStorageContract {
     private static final String ACCOUNT_KEY =
             "Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==";
 
+    // Azurite 3.37.0, fixado por digest para o build não mudar sozinho; atualize de propósito.
     @Container
-    private static final GenericContainer<?> AZURITE =
-            new GenericContainer<>("mcr.microsoft.com/azure-storage/azurite:latest")
+    private static final GenericContainer<?> AZURITE = new GenericContainer<>(
+            "mcr.microsoft.com/azure-storage/azurite@sha256:830430c1da1a2d537e08f3e6764dd1f5ae00cf0346bcaf625b968ec3f0971fd5")
                     .withCommand("azurite-blob", "--blobHost", "0.0.0.0", "--skipApiVersionCheck", "--loose")
                     .withExposedPorts(10000)
                     .waitingFor(Wait.forListeningPort());

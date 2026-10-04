@@ -45,13 +45,11 @@ import java.time.Instant;
 import java.util.Arrays;
 import java.util.Date;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Stream;
 import java.util.stream.StreamSupport;
@@ -250,16 +248,23 @@ public final class OciObjectStorage implements ObjectStorage {
                 throw translate(e, "Falha ao listar " + uri(prefix));
             }
         };
-        Set<String> seen = new HashSet<>();
+        // Páginas em ordem e a seguinte começa em nextStartWith: só a última pasta de uma página pode se repetir
+        // no começo da próxima, então basta compará-la com a anterior.
+        String[] lastFolder = {null};
         return Stream.iterate(fetch.apply(null), Objects::nonNull,
                         page -> page.getNextStartWith() == null ? null : fetch.apply(page.getNextStartWith()))
                 .flatMap(page -> Stream.concat(
                                 page.getObjects().stream().<ListEntry>map(OciObjectStorage::summary),
                                 prefixes(page).stream().map(CommonPrefix::new))
                         .sorted(StorageStreams.BY_KEY))
-                // ponytail: guarda todas as pastas vistas para não repetir uma que cruze a fronteira de página;
-                // memória proporcional ao número de pastas do nível.
-                .filter(entry -> !(entry instanceof CommonPrefix folder) || seen.add(folder.key()));
+                .filter(entry -> {
+                    if (!(entry instanceof CommonPrefix folder)) {
+                        return true;
+                    }
+                    boolean repeated = folder.key().equals(lastFolder[0]);
+                    lastFolder[0] = folder.key();
+                    return !repeated;
+                });
     }
 
     private static List<String> prefixes(ListObjects page) {

@@ -213,4 +213,21 @@ class CoreModelTest {
 
         assertEquals(List.of("z", "a", "m", "b"), List.copyOf(new DeleteResult(failures).failures().keySet()));
     }
+
+    @Test
+    void sidecarIgnoradoQuandoNaoDescreveMaisOArquivo() throws java.io.IOException {
+        java.util.Properties sidecar = new java.util.Properties();
+        sidecar.load(new ByteArrayInputStream(SidecarFiles.encode(ObjectMetadata.of("text/plain"), "v9", 5, 100)));
+
+        assertEquals("v9", SidecarFiles.versionOf(SidecarFiles.describing(sidecar, 5, 100), 100));
+        assertEquals("text/plain", SidecarFiles.metadataFrom(SidecarFiles.describing(sidecar, 5, 100)).contentType());
+        assertEquals("v100", SidecarFiles.versionOf(SidecarFiles.describing(sidecar, 6, 100), 100), "outro tamanho");
+        assertEquals("v200", SidecarFiles.versionOf(SidecarFiles.describing(sidecar, 5, 200), 200), "outra data");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"a/../b", "a//b", "a/", "/a", "a\\b", "x.", "x ", ".uploads/x", "a.objmeta", "d/.pending-1"})
+    void chaveDeArquivoInvalidaEhRejeitada(String key) {
+        assertThrows(IllegalArgumentException.class, () -> SidecarFiles.requireValidKey(key));
+    }
 }

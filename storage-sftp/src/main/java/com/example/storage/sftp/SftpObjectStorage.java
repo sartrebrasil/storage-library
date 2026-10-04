@@ -12,6 +12,7 @@ import com.example.storage.ObjectSummary;
 import com.example.storage.PreconditionFailedException;
 import com.example.storage.PresignedRequest;
 import com.example.storage.PutOptions;
+import com.example.storage.SidecarFiles;
 import com.example.storage.StorageException;
 import com.example.storage.StorageStreams;
 import net.schmizz.sshj.SSHClient;
@@ -25,7 +26,6 @@ import net.schmizz.sshj.sftp.Response.StatusCode;
 import net.schmizz.sshj.sftp.SFTPClient;
 import net.schmizz.sshj.sftp.SFTPException;
 
-import java.io.ByteArrayOutputStream;
 import java.io.FilterInputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -36,7 +36,6 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -84,9 +83,7 @@ import java.util.stream.Stream;
  */
 public final class SftpObjectStorage implements ObjectStorage {
 
-    private static final String META_SUFFIX = ".objmeta";
-    private static final String TEMP_PREFIX = ".pending-";
-    static final String UPLOADS_DIR = ".uploads";
+    static final String UPLOADS_DIR = SidecarFiles.UPLOADS_DIR;
 
     private final SftpConnection connection;
     private final String root;
@@ -277,22 +274,7 @@ public final class SftpObjectStorage implements ObjectStorage {
     // ------------------------------------------------------------------
 
     private String resolve(String key) {
-        Objects.requireNonNull(key, "key");
-        if (key.isEmpty() || key.startsWith("/") || key.contains("\\")) {
-            throw new IllegalArgumentException("Chave inválida: " + key);
-        }
-        if (key.equals(UPLOADS_DIR) || key.startsWith(UPLOADS_DIR + "/")) {
-            throw new IllegalArgumentException("Chave usa o prefixo reservado " + UPLOADS_DIR + ": " + key);
-        }
-        for (String segment : key.split("/", -1)) {
-            if (segment.isEmpty() || segment.equals(".") || segment.equals("..")) {
-                throw new IllegalArgumentException("Chave inválida (path traversal): " + key);
-            }
-            if (segment.endsWith(META_SUFFIX) || segment.startsWith(TEMP_PREFIX)) {
-                throw new IllegalArgumentException("Chave usa um nome reservado (" + META_SUFFIX + " ou "
-                        + TEMP_PREFIX + "): " + key);
-            }
-        }
+        SidecarFiles.requireValidKey(key);
         return root + "/" + key;
     }
 
@@ -389,7 +371,7 @@ public final class SftpObjectStorage implements ObjectStorage {
     }
 
     static String tempPath(String target) {
-        return parentOf(target) + "/" + TEMP_PREFIX + UUID.randomUUID();
+        return parentOf(target) + "/" + SidecarFiles.TEMP_PREFIX + UUID.randomUUID();
     }
 
     /** Só desce nas pastas e só lê o sidecar dos arquivos que podem estar sob {@code prefix}. */
@@ -415,16 +397,12 @@ public final class SftpObjectStorage implements ObjectStorage {
                         // pasta apagada durante a listagem: só não aparece
                     }
                 }
-            } else if (entry.isRegularFile() && isDataFile(name) && key.startsWith(prefix)) {
+            } else if (entry.isRegularFile() && SidecarFiles.isDataFile(name) && key.startsWith(prefix)) {
                 FileAttributes attrs = entry.getAttributes();
                 String version = versionOf(describing(loadMetadata(sftp, entry.getPath()), attrs), attrs);
                 sink.add(new ObjectSummary(key, attrs.getSize(), version, Instant.ofEpochSecond(attrs.getMtime())));
             }
         }
-    }
-
-    private static boolean isDataFile(String name) {
-        return !name.endsWith(META_SUFFIX) && !name.startsWith(TEMP_PREFIX);
     }
 
     private static void copyRemoteFile(SFTPClient sftp, String source, String target) throws IOException {
@@ -466,43 +444,23 @@ public final class SftpObjectStorage implements ObjectStorage {
         }
     }
 
+    /** No SFTP, a data de modificação do sidecar é em segundos, a resolução do protocolo. */
     private static void writeMetadata(SFTPClient sftp, String file, ObjectMetadata metadata, String version,
                                       FileAttributes data) throws IOException {
-        Properties props = new Properties();
-        props.setProperty("version", version);
-        props.setProperty("size", String.valueOf(data.getSize()));
-        props.setProperty("mtime", String.valueOf(data.getMtime()));
-        if (metadata.contentType() != null) {
-            props.setProperty("contentType", metadata.contentType());
-        }
-        if (metadata.contentDisposition() != null) {
-            props.setProperty("contentDisposition", metadata.contentDisposition());
-        }
-        metadata.userMetadata().forEach((k, v) -> props.setProperty("user." + k, v));
-        ByteArrayOutputStream buffer = new ByteArrayOutputStream();
-        props.store(buffer, null);
+        byte[] content = SidecarFiles.encode(metadata, version, data.getSize(), data.getMtime());
         try (RemoteFile remote = sftp.open(file, Set.of(OpenMode.WRITE, OpenMode.CREAT, OpenMode.TRUNC))) {
             try (OutputStream out = remote.new RemoteFileOutputStream()) {
-                out.write(buffer.toByteArray());
+                out.write(content);
             }
         }
     }
 
-    /**
-     * {@code props} se ele descreve o arquivo (mesmo tamanho e data de modificação, em segundos), senão
-     * vazio. Sidecars gravados antes de guardarem tamanho e data valem como estão.
-     */
     private static Properties describing(Properties props, FileAttributes data) {
-        String size = props.getProperty("size");
-        String mtime = props.getProperty("mtime");
-        boolean stale = (size != null && !size.equals(String.valueOf(data.getSize())))
-                || (mtime != null && !mtime.equals(String.valueOf(data.getMtime())));
-        return stale ? new Properties() : props;
+        return SidecarFiles.describing(props, data.getSize(), data.getMtime());
     }
 
-    /** A versão do sidecar ou, sem ele, uma derivada da data de modificação. */
     private static String versionOf(Properties sidecar, FileAttributes data) {
-        return sidecar.getProperty("version", "v" + data.getMtime() * 1000);
+        return SidecarFiles.versionOf(sidecar, data.getMtime() * 1000);
     }
 
     private static Properties loadMetadata(SFTPClient sftp, String dataPath) throws IOException {
@@ -519,14 +477,8 @@ public final class SftpObjectStorage implements ObjectStorage {
         return props;
     }
 
-    private static ObjectMetadata metadataFrom(Properties props) {
-        Map<String, String> userMetadata = new LinkedHashMap<>();
-        for (String name : props.stringPropertyNames()) {
-            if (name.startsWith("user.")) {
-                userMetadata.put(name.substring("user.".length()), props.getProperty(name));
-            }
-        }
-        return new ObjectMetadata(props.getProperty("contentType"), props.getProperty("contentDisposition"), userMetadata);
+    private static ObjectMetadata metadataFrom(Properties sidecar) {
+        return SidecarFiles.metadataFrom(sidecar);
     }
 
     /**
@@ -569,7 +521,7 @@ public final class SftpObjectStorage implements ObjectStorage {
     }
 
     static String metaPath(String dataPath) {
-        return dataPath + META_SUFFIX;
+        return dataPath + SidecarFiles.META_SUFFIX;
     }
 
     private static boolean isNotFound(SFTPException e) {
