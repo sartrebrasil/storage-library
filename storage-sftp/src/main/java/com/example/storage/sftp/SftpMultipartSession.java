@@ -4,7 +4,6 @@ import com.example.storage.MultipartSession;
 import com.example.storage.ObjectMetadata;
 import com.example.storage.StorageException;
 import com.example.storage.UploadedPart;
-import net.schmizz.sshj.SSHClient;
 import net.schmizz.sshj.sftp.OpenMode;
 import net.schmizz.sshj.sftp.RemoteFile;
 import net.schmizz.sshj.sftp.RemoteResourceInfo;
@@ -22,21 +21,22 @@ import java.util.Set;
 /**
  * Cada parte vira um arquivo em {@code .uploads/<uploadId>/part-<n>}; {@link #complete}
  * concatena os arquivos direto no destino, em streaming. Cada chamada abre seu próprio canal
- * SFTP, então partes em voo em paralelo (via {@code MultipartConfig.maxInFlight}) não competem
- * pelo mesmo canal.
+ * SFTP da {@link SftpConnection}, então partes em voo em paralelo (via
+ * {@code MultipartConfig.maxInFlight}) não competem pelo mesmo canal, e esperam uma vaga quando o
+ * limite de canais da conexão foi atingido.
  */
 final class SftpMultipartSession implements MultipartSession {
 
-    private final SSHClient sshClient;
+    private final SftpConnection connection;
     private final String targetPath;
     private final String uploadDir;
     private final String key;
     private final String uploadId;
     private final ObjectMetadata metadata;
 
-    SftpMultipartSession(SSHClient sshClient, String targetPath, String uploadDir, String key,
+    SftpMultipartSession(SftpConnection connection, String targetPath, String uploadDir, String key,
                          String uploadId, ObjectMetadata metadata) {
-        this.sshClient = sshClient;
+        this.connection = connection;
         this.targetPath = targetPath;
         this.uploadDir = uploadDir;
         this.key = key;
@@ -56,7 +56,8 @@ final class SftpMultipartSession implements MultipartSession {
 
     @Override
     public UploadedPart uploadPart(int partNumber, byte[] data, int length) {
-        try (SFTPClient sftp = sshClient.newSFTPClient()) {
+        try (SftpConnection.Channel channel = connection.open()) {
+            SFTPClient sftp = channel.sftp();
             SftpObjectStorage.mkdirs(sftp, uploadDir);
             try (RemoteFile file = sftp.open(partPath(partNumber), Set.of(OpenMode.WRITE, OpenMode.CREAT, OpenMode.TRUNC))) {
                 try (OutputStream out = file.new RemoteFileOutputStream()) {
@@ -78,7 +79,8 @@ final class SftpMultipartSession implements MultipartSession {
                 .toList();
         String parent = SftpObjectStorage.parentOf(targetPath);
         String temp = SftpObjectStorage.tempPath(targetPath);
-        try (SFTPClient sftp = sshClient.newSFTPClient()) {
+        try (SftpConnection.Channel channel = connection.open()) {
+            SFTPClient sftp = channel.sftp();
             SftpObjectStorage.mkdirs(sftp, parent);
             try (RemoteFile out = sftp.open(temp, Set.of(OpenMode.WRITE, OpenMode.CREAT, OpenMode.TRUNC))) {
                 try (OutputStream os = out.new RemoteFileOutputStream()) {
@@ -107,7 +109,8 @@ final class SftpMultipartSession implements MultipartSession {
 
     @Override
     public List<UploadedPart> listParts() {
-        try (SFTPClient sftp = sshClient.newSFTPClient()) {
+        try (SftpConnection.Channel channel = connection.open()) {
+            SFTPClient sftp = channel.sftp();
             List<RemoteResourceInfo> entries;
             try {
                 entries = sftp.ls(uploadDir);
@@ -130,7 +133,8 @@ final class SftpMultipartSession implements MultipartSession {
     }
 
     private void deleteUploadDir() {
-        try (SFTPClient sftp = sshClient.newSFTPClient()) {
+        try (SftpConnection.Channel channel = connection.open()) {
+            SFTPClient sftp = channel.sftp();
             List<RemoteResourceInfo> entries;
             try {
                 entries = sftp.ls(uploadDir);
@@ -147,7 +151,8 @@ final class SftpMultipartSession implements MultipartSession {
     }
 
     private void deleteQuietly(String path) {
-        try (SFTPClient sftp = sshClient.newSFTPClient()) {
+        try (SftpConnection.Channel channel = connection.open()) {
+            SFTPClient sftp = channel.sftp();
             sftp.rm(path);
         } catch (IOException ignored) {
             // a falha que importa é a original do upload
