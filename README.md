@@ -217,8 +217,10 @@ A faixa é cortada no fim do objeto, como no HTTP. `bytes=0-` equivale a `ByteRa
 ### Download por Spring MVC
 
 `storage-spring-web` monta a resposta acima para um controller: `200`/`206`, `Content-Disposition`
-(RFC 6266, com `filename*` para nomes com acento), `Content-Type`, `Content-Length`, `Accept-Ranges`
-e `Content-Range`, com o stream do storage como corpo. `StreamLimiter` limita downloads simultâneos
+(RFC 6266, com `filename*` para nomes com acento), `Content-Type`, `Content-Length`, `Accept-Ranges`,
+`Content-Range`, `ETag` e `Last-Modified`, com o stream do storage como corpo. Com
+`attachmentForRequest`, que recebe os cabeçalhos da requisição, um `If-Range` que não corresponde mais
+ao objeto serve o objeto inteiro: um download retomado depois de o objeto mudar não emenda duas versões. `StreamLimiter` limita downloads simultâneos
 por instância sem bloquear; o `Permit` é solto quando o Spring fecha o corpo, ou na hora se a leitura
 falhar.
 
@@ -226,10 +228,10 @@ falhar.
 StreamLimiter limiter = new StreamLimiter(20);
 
 @GetMapping("/files/{id}")
-ResponseEntity<Resource> download(@PathVariable String id, @RequestHeader(value = "Range", required = false) String range) {
+ResponseEntity<Resource> download(@PathVariable String id, @RequestHeader HttpHeaders request) {
     ObjectInfo head = storage.head(keyOf(id)).orElseThrow(NotFound::new);
     StreamLimiter.Permit permit = limiter.tryAcquire().orElseThrow(TooManyDownloads::new);   // 429
-    return ObjectResponses.attachment(storage, head, range,
+    return ObjectResponses.attachmentForRequest(storage, head, request,
             Attachment.of("report-1.csv.gz", "application/gzip").withHeader("X-Checksum-Sha256", sha256), permit);
 }
 
