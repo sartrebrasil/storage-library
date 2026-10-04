@@ -226,7 +226,7 @@ class CoreModelTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"a/../b", "a//b", "a/", "/a", "a\b", "x.", "x ", ".uploads/x", "a.objmeta", "d/.pending-1"})
+    @ValueSource(strings = {"a/../b", "a//b", "a/", "/a", "a\\b", "x.", "x ", ".uploads/x", "a.objmeta", "d/.pending-1"})
     void chaveDeArquivoInvalidaEhRejeitada(String key) {
         assertThrows(IllegalArgumentException.class, () -> SidecarFiles.requireValidKey(key));
     }
