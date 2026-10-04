@@ -1,17 +1,24 @@
 package com.example.storage.sftp;
 
 import com.example.storage.ObjectStorage;
+import com.example.storage.PutOptions;
 import com.example.storage.testkit.ObjectStorageContract;
 import net.schmizz.sshj.SSHClient;
 import net.schmizz.sshj.transport.verification.PromiscuousVerifier;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.wait.strategy.Wait;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
 import java.io.IOException;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
+import java.util.UUID;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /** Contrato contra um servidor OpenSSH sftp-server real (imagem atmoz/sftp). Pulado sem Docker. */
 @Testcontainers(disabledWithoutDocker = true)
@@ -59,6 +66,19 @@ class SftpContractTest extends ObjectStorageContract {
     @Override
     protected ObjectStorage storageWithMissingBucket() {
         return new SftpObjectStorage(sshClient, "/nao-existe");
+    }
+
+    @Test
+    void copySobreSiMesmoPreservaConteudo() throws IOException {
+        String key = "copia-propria/" + UUID.randomUUID();
+        storage.put(key, "conteudo".getBytes(StandardCharsets.UTF_8), PutOptions.of("text/plain"));
+
+        storage.copy(key, key);
+
+        try (InputStream in = storage.open(key)) {
+            assertEquals("conteudo", new String(in.readAllBytes(), StandardCharsets.UTF_8));
+        }
+        assertEquals("text/plain", storage.head(key).orElseThrow().metadata().contentType());
     }
 
     @Override
