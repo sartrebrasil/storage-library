@@ -27,6 +27,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -40,6 +41,7 @@ import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** Contrato contra um servidor OpenSSH sftp-server real (imagem atmoz/sftp). Pulado sem Docker. */
 @Testcontainers(disabledWithoutDocker = true)
@@ -165,6 +167,45 @@ class SftpContractTest extends ObjectStorageContract {
                 session.abort();
             }
         }
+    }
+
+    @Test
+    void semCanalLivreAOperacaoEsperaEFalhaComMensagemClara() throws IOException {
+        try (SftpConnection connection = SftpConnection.reconnecting(SftpContractTest::connect, 2, Duration.ofMillis(300))) {
+            SftpObjectStorage limited = new SftpObjectStorage(connection, "/upload");
+            String key = "canais/" + UUID.randomUUID();
+            limited.put(key, "x".getBytes(StandardCharsets.UTF_8), PutOptions.of("text/plain"));
+
+            InputStream first = limited.open(key);
+            try (InputStream second = limited.open(key)) {
+                StorageException e = assertThrows(StorageException.class, () -> limited.head(key));
+                assertTrue(e.getMessage().contains("canais"), e.getMessage());
+            }
+            assertTrue(limited.head(key).isPresent(), "o canal do stream fechado volta para a conexão");
+            first.close();
+        }
+    }
+
+    @Test
+    void reconectaQuandoAConexaoCai() throws IOException {
+        try (SftpConnection connection = SftpConnection.reconnecting(SftpContractTest::connect, 8)) {
+            SftpObjectStorage reconnecting = new SftpObjectStorage(connection, "/upload");
+            String key = "reconexao/" + UUID.randomUUID();
+            reconnecting.put(key, "x".getBytes(StandardCharsets.UTF_8), PutOptions.of("text/plain"));
+
+            connection.current().disconnect();
+
+            assertTrue(reconnecting.head(key).isPresent());
+        }
+    }
+
+    private static SSHClient connect() throws IOException {
+        SSHClient client = new SSHClient();
+        client.addHostKeyVerifier(new PromiscuousVerifier());
+        client.connect(SFTP.getHost(), SFTP.getMappedPort(22));
+        client.getConnection().setTimeoutMs(120_000);   // ver setUp
+        client.authPassword("user", "pass");
+        return client;
     }
 
     private static void writeRaw(String path, String content) throws IOException {

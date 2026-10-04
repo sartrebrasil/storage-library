@@ -3,7 +3,7 @@ package com.example.storage.spring;
 import com.example.storage.ObjectStorage;
 import com.example.storage.PutOptions;
 import com.example.storage.sftp.SftpObjectStorage;
-import net.schmizz.sshj.SSHClient;
+import com.example.storage.sftp.SftpConnection;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
@@ -38,7 +38,7 @@ class SftpStorageAutoConfigurationTest {
                 "storage.sftp.root=/upload", "storage.sftp.host=" + SFTP.getHost(),
                 "storage.sftp.port=" + SFTP.getMappedPort(22), "storage.sftp.username=user",
                 "storage.sftp.password=pass", "storage.sftp.insecure-trust-all-hosts=true").run(context -> {
-            assertThat(context).hasSingleBean(SSHClient.class);
+            assertThat(context).hasSingleBean(SftpConnection.class);
             ObjectStorage storage = context.getBean(ObjectStorage.class);
             assertThat(storage).isInstanceOf(SftpObjectStorage.class);
 
