@@ -26,6 +26,7 @@ import com.google.cloud.storage.StorageException;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
+import java.io.ByteArrayInputStream;
 import java.io.InputStream;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
@@ -40,6 +41,7 @@ import java.util.stream.IntStream;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.Mockito.*;
 
@@ -64,7 +66,7 @@ class GcsOperationsTest {
     @Test
     void putComMetadataDevolveGenerationEAplicaCondicao() throws Exception {
         Blob created = blob("k", 42);
-        when(client.createFrom(any(BlobInfo.class), any(InputStream.class), any(Storage.BlobWriteOption[].class)))
+        when(client.createFrom(any(BlobInfo.class), any(InputStream.class), anyInt(), any(Storage.BlobWriteOption[].class)))
                 .thenReturn(created);
         var options = PutOptions.of(new ObjectMetadata("text/plain", null, Map.of("tenant", "t1"))).ifVersionMatches("7");
 
@@ -72,23 +74,41 @@ class GcsOperationsTest {
 
         ArgumentCaptor<BlobInfo> info = ArgumentCaptor.forClass(BlobInfo.class);
         ArgumentCaptor<Storage.BlobWriteOption> condition = ArgumentCaptor.forClass(Storage.BlobWriteOption.class);
-        verify(client).createFrom(info.capture(), any(InputStream.class), condition.capture());
+        ArgumentCaptor<Integer> bufferSize = ArgumentCaptor.forClass(Integer.class);
+        verify(client).createFrom(info.capture(), any(InputStream.class), bufferSize.capture(), condition.capture());
         assertEquals("42", version);
+        // Sem isto o SDK aloca 15 MiB por put, qualquer que seja o tamanho (ele sobe para o mínimo de 256 KiB).
+        assertEquals(5, bufferSize.getValue());
         assertEquals("text/plain", info.getValue().getContentType());
         assertEquals(Map.of("tenant", "t1"), info.getValue().getMetadata());
         assertEquals(Storage.BlobWriteOption.generationMatch(7), condition.getValue());
     }
 
     @Test
+    void putComStreamDeTamanhoDiferenteDoInformadoFalhaSemGravar() throws Exception {
+        // Como o SDK: lê o stream até o fim antes de concluir o upload.
+        when(client.createFrom(any(BlobInfo.class), any(InputStream.class), anyInt(), any(Storage.BlobWriteOption[].class)))
+                .thenAnswer(inv -> {
+                    inv.getArgument(1, InputStream.class).readAllBytes();
+                    return blob("k", 1);
+                });
+
+        assertThrows(com.example.storage.StorageException.class,
+                () -> storage.put("k", new ByteArrayInputStream(new byte[3]), 5, PutOptions.of("text/plain")));
+        assertThrows(com.example.storage.StorageException.class,
+                () -> storage.put("k", new ByteArrayInputStream(new byte[8]), 5, PutOptions.of("text/plain")));
+    }
+
+    @Test
     void putIfNotExistsUsaDoesNotExistEMapeia412() throws Exception {
-        when(client.createFrom(any(BlobInfo.class), any(InputStream.class), any(Storage.BlobWriteOption[].class)))
+        when(client.createFrom(any(BlobInfo.class), any(InputStream.class), anyInt(), any(Storage.BlobWriteOption[].class)))
                 .thenThrow(new StorageException(412, "conditionNotMet"));
 
         assertThrows(PreconditionFailedException.class,
                 () -> storage.put("k", new byte[1], PutOptions.of("text/plain").ifNotExists()));
 
         ArgumentCaptor<Storage.BlobWriteOption> condition = ArgumentCaptor.forClass(Storage.BlobWriteOption.class);
-        verify(client).createFrom(any(BlobInfo.class), any(InputStream.class), condition.capture());
+        verify(client).createFrom(any(BlobInfo.class), any(InputStream.class), anyInt(), condition.capture());
         assertEquals(Storage.BlobWriteOption.doesNotExist(), condition.getValue());
     }
 
