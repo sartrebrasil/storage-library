@@ -1,6 +1,6 @@
 # Plano: correções do code review completo
 
-- **Status:** ativo; nenhuma fase iniciada
+- **Status:** ativo; R0 concluída; R1 em andamento
 - **Criado em:** 03/10/2026
 - **Origem:** code review completo dos 11 módulos (commit `f0884ec`). Itens marcados com ✔ foram
   confirmados no código ou nos fontes dos SDKs em `~/.m2` (AWS 2.55, GCS 2.74, Azure Blob 12.35,
@@ -27,8 +27,8 @@ reduzir a duplicação entre adapters e fechar as lacunas de teste que deixaram 
 
 | Fase | Entrega | Itens | Depende de | Status |
 |---|---|---|---|---|
-| R0 | Críticos: perda de dados e recursos quebrados | C1–C6 | — | Pendente |
-| R1 | Core e contrato de exceções | A1–A3 | — | Pendente |
+| R0 | Críticos: perda de dados e recursos quebrados | C1–C6 | — | Concluída |
+| R1 | Core e contrato de exceções | A1–A3 | — | Em andamento |
 | R2 | Integridade em filesystem e SFTP | A5–A8, M7–M9 | R1 (A1) | Pendente |
 | R3 | Adapters de nuvem | A4, A10, A11, M3–M6 | R1 (A3) | Pendente |
 | R4 | SFTP operacional | A9, M10 | R2 | Pendente |
@@ -131,4 +131,12 @@ reduzir a duplicação entre adapters e fechar as lacunas de teste que deixaram 
 
 ## Revisões
 
-Nenhuma ainda.
+- **04/10/2026 — R0 concluída.** C1–C6 entraram em `main`, um commit por item, cada um com um
+  teste que reproduzia a falha antes da correção. Desvio: C6 não ganhou teste MockMvc, que exigiria
+  `spring-webmvc`, `spring-test` e a API de Servlet como dependências de teste; o teste fixa a classe
+  exata `InputStreamResource` do corpo, que é a condição que o Spring MVC verifica. Observado no build
+  completo: `SftpContractTest.multipartMontaOObjetoCompleto` falhou uma vez com `SFTPException: Failure`
+  numa parte em paralelo contra o atmoz/sftp em Docker e passou ao repetir; acompanhar em A9.
+- **04/10/2026 — A2 decidido.** Na leitura, a metadata do provedor é devolvida como veio, mesmo fora
+  das regras da lib (`goog-reserved-file-mtime`, `s3cmd-attrs`, maiúsculas no Azure). A validação
+  continua só na escrita.
