@@ -313,13 +313,24 @@ public final class SftpObjectStorage implements ObjectStorage {
         return !name.endsWith(META_SUFFIX) && !name.startsWith(TEMP_PREFIX);
     }
 
+    /**
+     * Copia para um temporário e renomeia sobre o destino: quem lê nunca vê o destino pela metade,
+     * e {@code copy(k, k)} não trunca a origem antes de lê-la.
+     */
     private static void copyRemoteFile(SFTPClient sftp, String source, String target) throws IOException {
-        try (RemoteFile in = sftp.open(source, Set.of(OpenMode.READ));
-             RemoteFile out = sftp.open(target, Set.of(OpenMode.WRITE, OpenMode.CREAT, OpenMode.TRUNC))) {
-            try (InputStream is = in.new RemoteFileInputStream();
-                 OutputStream os = out.new RemoteFileOutputStream()) {
-                is.transferTo(os);
+        String temp = parentOf(target) + "/" + TEMP_PREFIX + UUID.randomUUID();
+        try {
+            try (RemoteFile in = sftp.open(source, Set.of(OpenMode.READ));
+                 RemoteFile out = sftp.open(temp, Set.of(OpenMode.WRITE, OpenMode.CREAT, OpenMode.TRUNC))) {
+                try (InputStream is = in.new RemoteFileInputStream();
+                     OutputStream os = out.new RemoteFileOutputStream()) {
+                    is.transferTo(os);
+                }
             }
+            sftp.rename(temp, target, Set.of(RenameFlags.OVERWRITE, RenameFlags.ATOMIC));
+        } catch (IOException e) {
+            rmQuietly(sftp, temp);
+            throw e;
         }
     }
 
