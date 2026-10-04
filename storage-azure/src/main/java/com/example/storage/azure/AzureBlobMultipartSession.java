@@ -14,6 +14,7 @@ import com.azure.storage.blob.options.BlockBlobStageBlockOptions;
 import com.azure.storage.blob.specialized.BlockBlobClient;
 import com.example.storage.MultipartSession;
 import com.example.storage.ObjectMetadata;
+import com.example.storage.StorageException;
 import com.example.storage.UploadedPart;
 
 import java.nio.ByteBuffer;
@@ -28,6 +29,7 @@ import java.util.function.Function;
 final class AzureBlobMultipartSession implements MultipartSession {
 
     private final BlockBlobClient blob;
+    private volatile boolean aborted;
     private final String key;
     private final String uploadId;
     private final ObjectMetadata metadata;
@@ -51,6 +53,7 @@ final class AzureBlobMultipartSession implements MultipartSession {
 
     @Override
     public UploadedPart uploadPart(int partNumber, byte[] data, int length) {
+        requireNotAborted();
         // O Azure rejeita bloco vazio. Parte vazia só acontece no relatório
         // sem nenhum byte; o commit com lista vazia cria o blob de 0 bytes.
         if (length == 0) {
@@ -72,6 +75,7 @@ final class AzureBlobMultipartSession implements MultipartSession {
 
     @Override
     public void complete(List<UploadedPart> parts) {
+        requireNotAborted();
         List<String> blockIds = parts.stream()
                 .filter(p -> p.etag() != null)
                 .sorted(Comparator.comparingInt(UploadedPart::partNumber))
@@ -98,14 +102,25 @@ final class AzureBlobMultipartSession implements MultipartSession {
     /**
      * O Azure não permite apagar blocos não commitados: eles são descartados
      * automaticamente após 7 dias (ou no próximo commit do mesmo blob). Apagar
-     * o blob aqui destruiria uma versão já publicada, então é no-op.
+     * o blob aqui destruiria uma versão já publicada, então só marca a sessão:
+     * depois do abort, ela não envia, não lista e não conclui mais nada.
      */
     @Override
     public void abort() {
+        aborted = true;
+    }
+
+    private void requireNotAborted() {
+        if (aborted) {
+            throw new StorageException("Upload " + uploadId + " de " + key + " foi abortado", null);
+        }
     }
 
     @Override
     public List<UploadedPart> listParts() {
+        if (aborted) {
+            return List.of();
+        }
         return blocks(BlockListType.UNCOMMITTED, BlockList::getUncommittedBlocks);
     }
 
@@ -125,7 +140,7 @@ final class AzureBlobMultipartSession implements MultipartSession {
                     .sorted(Comparator.comparingInt(UploadedPart::partNumber))
                     .toList();
         } catch (BlobStorageException e) {
-            if (e.getStatusCode() == 404) {
+            if (e.getStatusCode() == 404 && !AzureBlobObjectStorage.containerMissing(e)) {
                 return List.of();   // blob sem nenhum bloco
             }
             throw AzureBlobObjectStorage.translate(e, "Falha ao listar blocos de " + key);

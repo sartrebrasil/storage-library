@@ -294,7 +294,8 @@ public final class GcsObjectStorage implements ObjectStorage {
         switch (options.condition()) {
             case Condition.None none -> { }
             case Condition.IfNotExists ifNotExists -> headers.put("x-goog-if-generation-match", "0");
-            case Condition.IfVersionMatches match -> headers.put("x-goog-if-generation-match", match.version());
+            case Condition.IfVersionMatches match ->
+                    headers.put("x-goog-if-generation-match", String.valueOf(generation(match.version())));
         }
         URI url = sign(key, ttl, Storage.SignUrlOption.withV4Signature(),
                 Storage.SignUrlOption.httpMethod(HttpMethod.PUT), Storage.SignUrlOption.withExtHeaders(headers));
@@ -307,6 +308,10 @@ public final class GcsObjectStorage implements ObjectStorage {
                     .toURI();
         } catch (ServiceAccountSigner.SigningException | URISyntaxException e) {
             throw new StorageException("Falha ao gerar URL temporária de " + uri(key), e);
+        } catch (IllegalStateException e) {
+            // Credencial que não assina (ADC de usuário, via gcloud auth application-default login)
+            throw new StorageException("Falha ao gerar URL temporária de " + uri(key) + ": a credencial não assina; "
+                    + "use uma service account (chave ou workload identity com iam.serviceAccountTokenCreator)", e);
         }
     }
 

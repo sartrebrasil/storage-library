@@ -253,6 +253,15 @@ class OciOperationsTest {
         assertThrows(StorageException.class, entries::toList);
     }
 
+    @Test
+    void copyComEndpointSemRegiaoFalhaAntesDeQualquerChamada() {
+        when(client.getEndpoint()).thenReturn("https://proxy.interno.local");
+
+        assertThrows(IllegalStateException.class, () -> storage.copy("a", "b"));
+
+        verify(client, never()).headObject(any());
+    }
+
     private static ListObjectsResponse listPage(List<String> names, List<String> prefixes, String next) {
         return ListObjectsResponse.builder().listObjects(ListObjects.builder()
                 .objects(names.stream().map(n -> com.oracle.bmc.objectstorage.model.ObjectSummary.builder()
@@ -299,6 +308,7 @@ class OciOperationsTest {
 
     @Test
     void copyDeInexistenteLancaNotFoundSemCriarWorkRequest() {
+        when(client.getEndpoint()).thenReturn(ENDPOINT);
         when(client.headObject(any())).thenThrow(new BmcException(404, "ObjectNotFound", "gone", "req"));
 
         assertThrows(ObjectNotFoundException.class, () -> storage.copy("a", "b"));

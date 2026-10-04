@@ -93,10 +93,11 @@ final class S3MultipartSession implements MultipartSession {
     public void abort() {
         try {
             s3.abortMultipartUpload(b -> b.bucket(bucket).key(key).uploadId(uploadId));
-        } catch (NoSuchUploadException alreadyGone) {
-            // idempotente: já abortado/concluído
         } catch (SdkException e) {
-            throw S3ObjectStorage.translate(e, "Falha ao abortar upload de " + key);
+            if (!uploadGone(e)) {
+                throw S3ObjectStorage.translate(e, "Falha ao abortar upload de " + key);
+            }
+            // idempotente: já abortado/concluído
         }
     }
 
@@ -108,11 +109,21 @@ final class S3MultipartSession implements MultipartSession {
                     .parts().stream()
                     .map(p -> new UploadedPart(p.partNumber(), p.eTag(), checksumOf(p)))
                     .toList();
-        } catch (NoSuchUploadException alreadyGone) {
-            return List.of();   // concluído/abortado
         } catch (SdkException e) {
+            if (uploadGone(e)) {
+                return List.of();   // concluído/abortado
+            }
             throw S3ObjectStorage.translate(e, "Falha ao listar partes do upload de " + key);
         }
+    }
+
+    /**
+     * Upload concluído ou abortado. Também pelo status: backends compatíveis respondem 404 sem o código
+     * {@code NoSuchUpload} que o SDK transforma em {@link NoSuchUploadException}.
+     */
+    private static boolean uploadGone(SdkException e) {
+        return e instanceof NoSuchUploadException
+                || (S3ObjectStorage.status(e) == 404 && !"NoSuchBucket".equals(S3ObjectStorage.errorCode(e)));
     }
 
     /** A S3 só devolve a lista de partes se o upload usou checksum; sem ele, a lista vem vazia. */
