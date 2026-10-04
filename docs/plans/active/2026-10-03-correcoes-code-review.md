@@ -37,6 +37,39 @@ reduzir a duplicação entre adapters e fechar as lacunas de teste que deixaram 
 | R7 | Refatoração: duplicação para o core | F1–F7 | R2, R3 | Pendente |
 | R8 | Lacunas de teste | T1–T4 | paralela a todas | Pendente |
 
+## Andamento por item
+
+| Item | Situação | Commit |
+|---|---|---|
+| C1 | Feito | `3d45be8` |
+| C2 | Feito | `6d6d130` |
+| C3 | Feito | `80126ed` |
+| C4 | Feito | `4e03ca7` |
+| C5 | Feito | `1ac834f` |
+| C6 | Feito (teste fixa a classe do corpo, sem MockMvc) | `3ca1261` |
+| A1 | Feito | `57aca1b` |
+| A2 | Feito (metadata do provedor mantida como veio) | `57dc26c` |
+| A3 | Feito | `c741371` |
+| A4 | Feito | `8001267` |
+| A5 | Feito | `0d7181f` (filesystem), `b0a4e09` (SFTP) |
+| A6 | Feito | `0d7181f` (filesystem); SFTP já em `3d45be8` |
+| A7 | Feito | `0d7181f`, `b0a4e09` |
+| A8 | Feito | `0d7181f`, `b0a4e09` |
+| A9 | Feito | `bff769e` |
+| A10 | Feito | `85b77f6` |
+| A11 | Feito | `80cf5d6` |
+| M3 | Feito na OCI; S3 e GCS cobertos por `checkAccess` | `27eea07` |
+| M4 | Feito em S3, Azure e OCI; GCS não verificado, mantido | `85b77f6`, `8001267`, `27eea07` |
+| M5 | Feito | `8001267` |
+| M6 | Feito | `85b77f6`, `27eea07` |
+| M7 | Feito (teste só roda em POSIX) | `0d7181f` |
+| M8 | Feito | `b0a4e09` |
+| M9 | Feito (sem teste) | `b0a4e09` |
+| M10 | Feito | `b6f626c` |
+| Fora do plano | Corrida no `mkdirs` do SFTP com partes em paralelo | `5b452b2` |
+| M1, M2, B-Spring | Pendente (R5) | |
+| R6, R7, R8 | Pendente | |
+
 ## R0 — Críticos
 
 | ID | Módulo | Problema | Correção | Teste |
