@@ -1,5 +1,6 @@
 package com.example.storage.gcs;
 
+import com.example.storage.AccessDeniedException;
 import com.example.storage.ByteRange;
 import com.example.storage.ListEntry;
 import com.example.storage.ObjectContent;
@@ -11,6 +12,7 @@ import com.example.storage.PreconditionFailedException;
 import com.example.storage.PutOptions;
 import com.example.storage.RangeNotSatisfiableException;
 import com.google.api.gax.paging.Page;
+import com.google.cloud.BatchResult;
 import com.google.cloud.ReadChannel;
 import com.google.cloud.storage.Blob;
 import com.google.cloud.storage.BlobId;
@@ -18,6 +20,8 @@ import com.google.cloud.storage.BlobInfo;
 import com.google.cloud.storage.CopyWriter;
 import com.google.cloud.storage.MultipartUploadClient;
 import com.google.cloud.storage.Storage;
+import com.google.cloud.storage.StorageBatch;
+import com.google.cloud.storage.StorageBatchResult;
 import com.google.cloud.storage.StorageException;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -25,8 +29,13 @@ import org.mockito.ArgumentCaptor;
 import java.io.InputStream;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.stream.IntStream;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -213,16 +222,78 @@ class GcsOperationsTest {
     @Test
     void deleteAllEnviaLotesDe100ERegistraFalhaDoLote() {
         List<String> keys = IntStream.range(0, 150).mapToObj(i -> "k" + i).toList();
-        when(client.delete(anyList()))
-                .thenReturn(List.of())
-                .thenThrow(new StorageException(503, "unavailable"));
+        FakeBatches batches = new FakeBatches(client);
+        batches.failSubmit(2, new StorageException(503, "unavailable"));
 
         var result = storage.deleteAll(keys);
 
-        verify(client, times(2)).delete(anyList());
+        assertEquals(List.of(100, 50), batches.sizes);
         assertEquals(50, result.failures().size());
         assertTrue(result.failures().containsKey("k100"));
         assertFalse(result.failures().containsKey("k99"));
+    }
+
+    @Test
+    void deleteAllRegistraFalhaDeCadaItemEIgnoraInexistente() {
+        FakeBatches batches = new FakeBatches(client);
+        batches.itemError("negado", new StorageException(403, "forbidden"));
+        batches.itemMissing("sumiu");
+
+        var result = storage.deleteAll(List.of("ok", "negado", "sumiu"));
+
+        assertEquals(Set.of("negado"), result.failures().keySet());
+        assertInstanceOf(AccessDeniedException.class, result.failures().get("negado"));
+    }
+
+    /** Lotes de {@link Storage#batch()}: cada delete devolve sucesso, inexistente ou erro no submit. */
+    private static final class FakeBatches {
+
+        final List<Integer> sizes = new ArrayList<>();
+        private final Map<String, StorageException> itemErrors = new HashMap<>();
+        private final Set<String> missing = new HashSet<>();
+        private final Map<Integer, StorageException> submitErrors = new HashMap<>();
+
+        @SuppressWarnings("unchecked")
+        FakeBatches(Storage client) {
+            when(client.batch()).thenAnswer(newBatch -> {
+                StorageBatch batch = mock(StorageBatch.class);
+                Map<String, BatchResult.Callback<Boolean, StorageException>> callbacks = new LinkedHashMap<>();
+                when(batch.delete(any(BlobId.class))).thenAnswer(delete -> {
+                    String key = delete.<BlobId>getArgument(0).getName();
+                    StorageBatchResult<Boolean> result = mock(StorageBatchResult.class);
+                    doAnswer(notify -> callbacks.put(key, notify.getArgument(0))).when(result).notify(any());
+                    return result;
+                });
+                doAnswer(submit -> {
+                    sizes.add(callbacks.size());
+                    StorageException failure = submitErrors.get(sizes.size());
+                    if (failure != null) {
+                        throw failure;
+                    }
+                    callbacks.forEach((key, callback) -> {
+                        if (itemErrors.containsKey(key)) {
+                            callback.error(itemErrors.get(key));
+                        } else {
+                            callback.success(!missing.contains(key));
+                        }
+                    });
+                    return null;
+                }).when(batch).submit();
+                return batch;
+            });
+        }
+
+        void itemError(String key, StorageException error) {
+            itemErrors.put(key, error);
+        }
+
+        void itemMissing(String key) {
+            missing.add(key);
+        }
+
+        void failSubmit(int batchNumber, StorageException error) {
+            submitErrors.put(batchNumber, error);
+        }
     }
 
     @Test

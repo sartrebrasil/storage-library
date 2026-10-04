@@ -19,6 +19,7 @@ import com.example.storage.PutOptions;
 import com.example.storage.StorageException;
 import com.google.auth.ServiceAccountSigner;
 import com.google.cloud.BaseServiceException;
+import com.google.cloud.BatchResult;
 import com.google.cloud.ReadChannel;
 import com.google.cloud.storage.Blob;
 import com.google.cloud.storage.BlobId;
@@ -28,6 +29,7 @@ import com.google.cloud.storage.HttpStorageOptions;
 import com.google.cloud.storage.MultipartUploadClient;
 import com.google.cloud.storage.MultipartUploadSettings;
 import com.google.cloud.storage.Storage;
+import com.google.cloud.storage.StorageBatch;
 import com.google.cloud.storage.multipartupload.model.CreateMultipartUploadRequest;
 
 import java.io.IOException;
@@ -36,7 +38,6 @@ import java.net.URI;
 import java.net.URISyntaxException;
 import java.nio.channels.Channels;
 import java.time.Duration;
-import java.util.ArrayList;
 import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -223,10 +224,24 @@ public final class GcsObjectStorage implements ObjectStorage {
         List<String> all = List.copyOf(keys);
         for (int start = 0; start < all.size(); start += DELETE_BATCH) {
             List<String> batch = all.subList(start, Math.min(all.size(), start + DELETE_BATCH));
-            List<BlobId> ids = new ArrayList<>(batch.size());
-            batch.forEach(k -> ids.add(BlobId.of(bucket, k)));
+            // Lote próprio em vez de storage.delete(List): aquele devolve false tanto para chave
+            // inexistente quanto para erro do item (403, 429...), e o erro se perderia.
+            StorageBatch requests = storage.batch();
+            for (String key : batch) {
+                requests.delete(BlobId.of(bucket, key)).notify(new BatchResult.Callback<>() {
+                    @Override
+                    public void success(Boolean deleted) {
+                        // false = não existia, que conta como sucesso
+                    }
+
+                    @Override
+                    public void error(com.google.cloud.storage.StorageException e) {
+                        failures.put(key, translate(e, "Falha ao apagar " + uri(key)));
+                    }
+                });
+            }
             try {
-                storage.delete(ids);   // um false por chave inexistente, que conta como sucesso
+                requests.submit();
             } catch (BaseServiceException e) {
                 StorageException failure = translate(e, "Falha ao apagar lote em gs://" + bucket);
                 batch.forEach(k -> failures.put(k, failure));
