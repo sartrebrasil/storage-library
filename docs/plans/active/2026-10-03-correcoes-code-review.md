@@ -1,6 +1,6 @@
 # Plano: correções do code review completo
 
-- **Status:** ativo; R0 a R3 concluídas; próxima: R4
+- **Status:** ativo; R0 a R4 concluídas; próxima: R5
 - **Criado em:** 03/10/2026
 - **Origem:** code review completo dos 11 módulos (commit `f0884ec`). Itens marcados com ✔ foram
   confirmados no código ou nos fontes dos SDKs em `~/.m2` (AWS 2.55, GCS 2.74, Azure Blob 12.35,
@@ -31,7 +31,7 @@ reduzir a duplicação entre adapters e fechar as lacunas de teste que deixaram 
 | R1 | Core e contrato de exceções | A1–A3 | — | Concluída |
 | R2 | Integridade em filesystem e SFTP | A5–A8, M7–M9 | R1 (A1) | Concluída |
 | R3 | Adapters de nuvem | A4, A10, A11, M3–M6 | R1 (A3) | Concluída |
-| R4 | SFTP operacional | A9, M10 | R2 | Pendente |
+| R4 | SFTP operacional | A9, M10 | R2 | Concluída |
 | R5 | Spring: robustez e observabilidade | M1, M2, B-Spring | R0 (C2, C3) | Pendente |
 | R6 | Baixa severidade restante | B-* | R1–R5 | Pendente |
 | R7 | Refatoração: duplicação para o core | F1–F7 | R2, R3 | Pendente |
@@ -161,3 +161,12 @@ reduzir a duplicação entre adapters e fechar as lacunas de teste que deixaram 
   condicional chega quase só de bucket inexistente, mas sem contrato GCS isso não foi verificado. A11
   troca o `createFrom` sem buffer pelo com `bufferSize = min(length, 15 MiB)` e um stream que exige
   exatamente `length` bytes.
+- **04/10/2026 — R4 concluída.** A9 virou a classe pública `SftpConnection`: semáforo justo de canais
+  (8 por padrão, espera de até 60 s), reconexão via `Connector` quando o cliente não está mais conectado,
+  e o starter expõe um bean `SftpConnection` no lugar do `SSHClient`, compartilhado entre os buckets, com
+  `storage.sftp.keep-alive` (30s) e `storage.sftp.max-channels` (8). Mudança visível: quem injetava o
+  `SSHClient` do starter passa a injetar `SftpConnection`; um `SSHClient` da aplicação continua aceito,
+  sem reconexão. Limites: operações em voo na conexão que caiu falham (não há retry); a reconexão só
+  acontece quando o sshj já marcou a conexão como desconectada, o que o keepalive acelera. M10: `checkAccess`
+  é um `stat` do root, e `list` começa na pasta mais funda do prefixo; um prefixo com `..` ou nome
+  reservado na parte de pasta passa a ser rejeitado como chave.
