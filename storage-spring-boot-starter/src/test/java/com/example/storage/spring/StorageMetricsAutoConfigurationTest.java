@@ -10,6 +10,10 @@ import io.micrometer.core.instrument.observation.DefaultMeterObservationHandler;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.micrometer.observation.ObservationRegistry;
 import org.junit.jupiter.api.Test;
+import org.springframework.boot.actuate.autoconfigure.metrics.CompositeMeterRegistryAutoConfiguration;
+import org.springframework.boot.actuate.autoconfigure.metrics.MetricsAutoConfiguration;
+import org.springframework.boot.actuate.autoconfigure.metrics.export.simple.SimpleMetricsExportAutoConfiguration;
+import org.springframework.boot.actuate.autoconfigure.observation.ObservationAutoConfiguration;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.test.context.FilteredClassLoader;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
@@ -68,6 +72,27 @@ class StorageMetricsAutoConfigurationTest {
                     MeterRegistry registry = context.getBean(MeterRegistry.class);
                     assertThat(registry.get("storage.operations").tag("storage", "reportsStorage").timer().count())
                             .isEqualTo(1);
+                });
+    }
+
+    @Test
+    void comAsAutoConfiguracoesDoActuatorDecoraEMede() {
+        // Sem registry do usuário: o ObservationRegistry e os handlers vêm do Actuator, como numa aplicação real.
+        new ApplicationContextRunner()
+                .withConfiguration(AutoConfigurations.of(ObservationAutoConfiguration.class,
+                        MetricsAutoConfiguration.class, SimpleMetricsExportAutoConfiguration.class,
+                        CompositeMeterRegistryAutoConfiguration.class, StorageAutoConfiguration.class,
+                        StorageMetricsAutoConfiguration.class))
+                .withBean(ObjectStorage.class, InMemoryObjectStorage::new)
+                .run(context -> {
+                    ObjectStorage storage = context.getBean(ObjectStorage.class);
+                    assertThat(storage).isInstanceOf(ObjectStorageMetrics.class);
+
+                    storage.head("k");
+
+                    MeterRegistry registry = context.getBean(MeterRegistry.class);
+                    assertThat(registry.get("storage.operations").tag("operation", "head").tag("outcome", "success")
+                            .timer().count()).isEqualTo(1);
                 });
     }
 
