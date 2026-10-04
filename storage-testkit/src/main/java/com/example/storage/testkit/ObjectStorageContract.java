@@ -266,6 +266,18 @@ public abstract class ObjectStorageContract {
     }
 
     @Test
+    void listComPrefixoNoMeioDeUmNomeEDePastaInexistente() {
+        for (String name : List.of("pre/abc", "pre/abd/x", "pre/b", "outro/abc")) {
+            storage().put(key(name), bytes(name), PutOptions.of("text/plain"));
+        }
+
+        assertEquals(List.of(key("pre/abc"), key("pre/abd/x")),
+                storage().list(key("pre/ab")).map(ObjectSummary::key).toList());
+        assertEquals(List.of(), storage().list(key("nao-existe/")).toList());
+        assertEquals(List.of(), storage().list(key("pre/abc/")).toList());
+    }
+
+    @Test
     void listPercorreTodasAsPaginas() throws Exception {
         int count = listCount();
         try (ExecutorService executor = Executors.newFixedThreadPool(16)) {

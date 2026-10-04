@@ -137,10 +137,14 @@ public final class FileSystemObjectStorage implements ObjectStorage {
 
     @Override
     public Stream<ObjectSummary> list(String prefix) {
-        if (!Files.isDirectory(root)) {
-            throw new StorageException("Bucket/raiz não existe: " + root, null);
+        checkAccess();
+        // Começa na pasta mais funda do prefixo ("a/b/c" começa em a/b), em vez de percorrer o root inteiro.
+        int slash = prefix.lastIndexOf('/');
+        Path start = slash < 0 ? root : resolve(prefix.substring(0, slash));
+        if (!Files.isDirectory(start)) {
+            return Stream.empty();
         }
-        try (Stream<Path> walk = Files.walk(root)) {
+        try (Stream<Path> walk = Files.walk(start)) {
             return walk.filter(Files::isRegularFile)
                     .filter(this::isDataFile)
                     .map(this::toKey)
@@ -151,6 +155,14 @@ public final class FileSystemObjectStorage implements ObjectStorage {
                     .stream();
         } catch (IOException | UncheckedIOException e) {
             throw new StorageException("Falha ao listar " + prefix, e);
+        }
+    }
+
+    /** Confere o root, sem percorrer a árvore como o padrão da interface. */
+    @Override
+    public void checkAccess() {
+        if (!Files.isDirectory(root)) {
+            throw new StorageException("Bucket/raiz não existe: " + root, null);
         }
     }
 

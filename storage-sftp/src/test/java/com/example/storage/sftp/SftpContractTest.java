@@ -4,6 +4,7 @@ import com.example.storage.MultipartSession;
 import com.example.storage.ObjectInfo;
 import com.example.storage.ObjectMetadata;
 import com.example.storage.ObjectStorage;
+import com.example.storage.ObjectSummary;
 import com.example.storage.PreconditionFailedException;
 import com.example.storage.PutOptions;
 import com.example.storage.StorageException;
@@ -197,6 +198,19 @@ class SftpContractTest extends ObjectStorageContract {
 
             assertTrue(reconnecting.head(key).isPresent());
         }
+    }
+
+    @Test
+    void listComPrefixoNaoLeOsSidecarsDeForaDele() throws IOException {
+        String base = "isolado/" + UUID.randomUUID();
+        storage.put(base + "/dentro/a.txt", "a".getBytes(StandardCharsets.UTF_8), PutOptions.of("text/plain"));
+        storage.put(base + "/fora/b.txt", "b".getBytes(StandardCharsets.UTF_8), PutOptions.of("text/plain"));
+        try (SFTPClient sftp = sshClient.newSFTPClient()) {
+            sftp.chmod("/upload/" + base + "/fora/b.txt.objmeta", 0);   // ilegível: lê-lo faria o list falhar
+        }
+
+        assertEquals(List.of(base + "/dentro/a.txt"),
+                storage.list(base + "/dentro/").map(ObjectSummary::key).toList());
     }
 
     private static SSHClient connect() throws IOException {
