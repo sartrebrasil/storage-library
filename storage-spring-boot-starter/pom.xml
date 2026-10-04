@@ -95,13 +95,20 @@
         </exclusion>
       </exclusions>
     </dependency>
-    <!-- Excluído das transitivas do Actuator acima (o Jackson delas rebaixaria o dos SDKs);
-         a aplicação traz o mesmo micrometer-core do próprio Actuator/Boot BOM. -->
+    <!-- O código só usa a Observation API; a aplicação traz a mesma versão do próprio Boot BOM.
+         Excluída das transitivas do Actuator acima (o Jackson delas rebaixaria o dos SDKs). -->
+    <dependency>
+      <groupId>io.micrometer</groupId>
+      <artifactId>micrometer-observation</artifactId>
+      <version>${micrometer.version}</version>
+      <optional>true</optional>
+    </dependency>
+    <!-- Testes: DefaultMeterObservationHandler, SimpleMeterRegistry e as auto-configurações de métricas -->
     <dependency>
       <groupId>io.micrometer</groupId>
       <artifactId>micrometer-core</artifactId>
       <version>${micrometer.version}</version>
-      <optional>true</optional>
+      <scope>test</scope>
     </dependency>
     <!-- Azure sem connection string: DefaultAzureCredential -->
     <dependency>
