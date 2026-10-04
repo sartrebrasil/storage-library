@@ -181,23 +181,38 @@ public final class SftpObjectStorage implements ObjectStorage {
 
     @Override
     public Stream<ObjectSummary> list(String prefix) {
+        // Começa na pasta mais funda do prefixo ("a/b/c" começa em a/b), em vez de percorrer o root inteiro.
+        int slash = prefix.lastIndexOf('/');
+        String start = slash < 0 ? root : resolve(prefix.substring(0, slash));
         List<ObjectSummary> items = withSftp("Falha ao listar " + prefix, sftp -> {
             List<ObjectSummary> collected = new ArrayList<>();
             try {
-                walk(sftp, root, collected);
+                walk(sftp, start, prefix, collected);
             } catch (SFTPException e) {
-                if (isNotFound(e)) {
+                if (!isNotFound(e)) {
+                    throw e;
+                }
+                if (start.equals(root) || !exists(sftp, root)) {
                     throw new StorageException("Bucket/raiz não existe: " + root, e);
                 }
-                throw e;
             }
             return collected;
         });
         return items.stream()
-                .filter(summary -> summary.key().startsWith(prefix))
                 .sorted(Comparator.comparing(ObjectSummary::key))
                 .toList()
                 .stream();
+    }
+
+    /** {@code stat} do root, sem percorrer a árvore como o padrão da interface. */
+    @Override
+    public void checkAccess() {
+        withSftp("Falha ao acessar " + root, sftp -> {
+            if (!isDirectory(sftp, root)) {
+                throw new StorageException("Bucket/raiz não existe: " + root, null);
+            }
+            return null;
+        });
     }
 
     @Override
@@ -367,19 +382,23 @@ public final class SftpObjectStorage implements ObjectStorage {
         return parentOf(target) + "/" + TEMP_PREFIX + UUID.randomUUID();
     }
 
-    private void walk(SFTPClient sftp, String dirPath, List<ObjectSummary> sink) throws IOException {
+    /** Só desce nas pastas e só lê o sidecar dos arquivos que podem estar sob {@code prefix}. */
+    private void walk(SFTPClient sftp, String dirPath, String prefix, List<ObjectSummary> sink) throws IOException {
         for (RemoteResourceInfo entry : sftp.ls(dirPath)) {
             String name = entry.getName();
             if (name.equals(".") || name.equals("..")) {
                 continue;
             }
+            String key = entry.getPath().substring(root.length() + 1);
             if (entry.isDirectory()) {
                 if (dirPath.equals(root) && name.equals(UPLOADS_DIR)) {
                     continue;   // pasta reservada dos uploads multipart
                 }
-                walk(sftp, entry.getPath(), sink);
-            } else if (entry.isRegularFile() && isDataFile(name)) {
-                String key = entry.getPath().substring(root.length() + 1);
+                String folder = key + "/";
+                if (folder.startsWith(prefix) || prefix.startsWith(folder)) {
+                    walk(sftp, entry.getPath(), prefix, sink);
+                }
+            } else if (entry.isRegularFile() && isDataFile(name) && key.startsWith(prefix)) {
                 FileAttributes attrs = entry.getAttributes();
                 String version = versionOf(describing(loadMetadata(sftp, entry.getPath()), attrs), attrs);
                 sink.add(new ObjectSummary(key, attrs.getSize(), version, Instant.ofEpochSecond(attrs.getMtime())));
