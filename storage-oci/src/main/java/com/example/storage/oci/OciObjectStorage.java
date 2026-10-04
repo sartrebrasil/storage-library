@@ -36,6 +36,7 @@ import com.oracle.bmc.objectstorage.requests.PutObjectRequest;
 import com.oracle.bmc.objectstorage.responses.GetObjectResponse;
 import com.oracle.bmc.objectstorage.responses.HeadObjectResponse;
 
+import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
 import java.time.Clock;
@@ -119,7 +120,8 @@ public final class OciObjectStorage implements ObjectStorage {
         try {
             return client.putObject(request.build()).getETag();
         } catch (BmcException e) {
-            if (options.condition() instanceof Condition.IfVersionMatches && e.getStatusCode() == 404) {
+            if (options.condition() instanceof Condition.IfVersionMatches && e.getStatusCode() == 404
+                    && !bucketMissing(e)) {
                 throw new PreconditionFailedException("Pré-condição falhou: " + uri(key) + " não existe", e);
             }
             throw translate(e, "Falha ao gravar " + uri(key));
@@ -149,6 +151,10 @@ public final class OciObjectStorage implements ObjectStorage {
         }
     }
 
+    /**
+     * Um HEAD não tem corpo, e o SDK monta o 404 sem dizer se falta o objeto ou o bucket: num 404, confirma o
+     * bucket com {@link #checkAccess()}, para um bucket inexistente não parecer objeto inexistente.
+     */
     @Override
     public Optional<ObjectInfo> head(String key) {
         try {
@@ -158,6 +164,7 @@ public final class OciObjectStorage implements ObjectStorage {
                     new ObjectMetadata(r.getContentType(), r.getContentDisposition(), unprefixed(r.getOpcMeta()))));
         } catch (BmcException e) {
             if (e.getStatusCode() == 404 && !bucketMissing(e)) {
+                checkAccess();
                 return Optional.empty();
             }
             throw translate(e, "Falha ao consultar " + uri(key));
@@ -185,9 +192,15 @@ public final class OciObjectStorage implements ObjectStorage {
             if (served == null) {
                 return new ObjectContent(response.getInputStream(), ByteRange.all(), response.getContentLength());
             }
-            return new ObjectContent(response.getInputStream(),
-                    ByteRange.of(served.getStartByte(), served.getEndByte() - served.getStartByte() + 1),
-                    served.getContentLength());
+            try {
+                return new ObjectContent(response.getInputStream(),
+                        ByteRange.of(served.getStartByte(), served.getEndByte() - served.getStartByte() + 1),
+                        served.getContentLength());
+            } catch (RuntimeException e) {
+                // Content-Range degenerado (fim antes do início) ou incompleto: não vaza a conexão
+                closeQuietly(response.getInputStream());
+                throw new StorageException("Resposta inválida (Content-Range " + served + ") ao ler " + uri(key), e);
+            }
         } catch (BmcException e) {
             throw translate(e, "Falha ao ler " + uri(key));
         }
@@ -409,5 +422,13 @@ public final class OciObjectStorage implements ObjectStorage {
                     k.startsWith(USER_METADATA_PREFIX) ? k.substring(USER_METADATA_PREFIX.length()) : k, v));
         }
         return result;
+    }
+
+    private static void closeQuietly(InputStream stream) {
+        try {
+            stream.close();
+        } catch (IOException ignored) {
+            // a falha que importa é a da resposta
+        }
     }
 }
