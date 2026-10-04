@@ -1,8 +1,11 @@
 package com.example.storage.spring;
 
 import com.example.storage.ByteRange;
+import com.example.storage.DeleteResult;
+import com.example.storage.ListEntry;
 import com.example.storage.MultipartSession;
 import com.example.storage.ObjectInfo;
+import com.example.storage.ObjectContent;
 import com.example.storage.ObjectMetadata;
 import com.example.storage.ObjectNotFoundException;
 import com.example.storage.ObjectStorage;
@@ -17,6 +20,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
 import java.time.Duration;
+import java.util.Collection;
 import java.util.Optional;
 import java.util.Spliterator;
 import java.util.Spliterators;
@@ -30,13 +34,14 @@ import java.util.stream.StreamSupport;
  * (tags {@code operation}, {@code storage}, {@code outcome}). Com o handler de métricas do Boot,
  * a observação vira o timer {@code storage.operations}; com Micrometer Tracing, vira também um
  * span ({@code storage put}, {@code storage head}...), filho da observação corrente da thread.
- * Os métodos com default no próprio {@link ObjectStorage} (ex.: {@code read}, {@code listDirectory},
- * {@code deleteAll}) não são medidos aqui: chamam os métodos abaixo, que já são.
+ * Todo método de {@link ObjectStorage} é repassado ao adapter, inclusive os que têm default na
+ * interface ({@code read}, {@code listDirectory}, {@code deleteAll}): os adapters os sobrescrevem
+ * com versões nativas (uma leitura só, delimiter, lote), que os defaults substituiriam.
  *
  * <p>{@code outcome} é {@code success}, {@code not_found} ({@link ObjectNotFoundException}, que
  * não marca o span como erro) ou {@code error}.</p>
  *
- * <p>{@code open} e {@code list} medem até o fim do consumo: o fim do stream, um erro de leitura
+ * <p>{@code open}, {@code read}, {@code list} e {@code listDirectory} medem até o fim do consumo: o fim do stream, um erro de leitura
  * ou o {@code close}, o que vier primeiro. Um stream abandonado sem fechar nem esgotar nunca encerra
  * a observação. Partes de multipart ({@link MultipartSession#uploadPart}) não são medidas.</p>
  */
@@ -121,6 +126,14 @@ class ObjectStorageMetrics implements DelegatingObjectStorage {
     }
 
     @Override
+    public ObjectContent read(String key, ByteRange range) {
+        Observation observation = start("read");
+        ObjectContent content = opened(observation, () -> delegate.read(key, range));
+        return new ObjectContent(new ObservedInputStream(content.stream(), new Ending(observation)),
+                content.range(), content.totalSize());
+    }
+
+    @Override
     public void checkAccess() {
         timed("checkAccess", () -> {
             delegate.checkAccess();
@@ -130,11 +143,20 @@ class ObjectStorageMetrics implements DelegatingObjectStorage {
 
     @Override
     public Stream<ObjectSummary> list(String prefix) {
-        Observation observation = start("list");
-        Stream<ObjectSummary> objects = opened(observation, () -> delegate.list(prefix));
+        return observedStream("list", () -> delegate.list(prefix));
+    }
+
+    @Override
+    public Stream<ListEntry> listDirectory(String prefix) {
+        return observedStream("listDirectory", () -> delegate.listDirectory(prefix));
+    }
+
+    private <T> Stream<T> observedStream(String operation, Supplier<Stream<T>> call) {
+        Observation observation = start(operation);
+        Stream<T> items = opened(observation, call);
         Ending ending = new Ending(observation);
-        return StreamSupport.stream(new ObservedSpliterator<>(objects.spliterator(), ending), false)
-                .onClose(objects::close)
+        return StreamSupport.stream(new ObservedSpliterator<>(items.spliterator(), ending), false)
+                .onClose(items::close)
                 .onClose(() -> ending.stop(null));
     }
 
@@ -144,6 +166,11 @@ class ObjectStorageMetrics implements DelegatingObjectStorage {
             delegate.delete(key);
             return null;
         });
+    }
+
+    @Override
+    public DeleteResult deleteAll(Collection<String> keys) {
+        return timed("deleteAll", () -> delegate.deleteAll(keys));
     }
 
     @Override

@@ -1,5 +1,9 @@
 package com.example.storage.spring;
 
+import com.example.storage.ByteRange;
+import com.example.storage.CommonPrefix;
+import com.example.storage.DeleteResult;
+import com.example.storage.ObjectContent;
 import com.example.storage.ObjectNotFoundException;
 import com.example.storage.ObjectStorage;
 import com.example.storage.ObjectSummary;
@@ -20,7 +24,10 @@ import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
+import java.io.ByteArrayInputStream;
 import java.io.InputStream;
+import java.util.List;
+import java.util.Map;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -93,6 +100,38 @@ class StorageMetricsAutoConfigurationTest {
                     MeterRegistry registry = context.getBean(MeterRegistry.class);
                     assertThat(registry.get("storage.operations").tag("operation", "head").tag("outcome", "success")
                             .timer().count()).isEqualTo(1);
+                });
+    }
+
+    @Test
+    void readListDirectoryEDeleteAllChegamAosOverridesDoAdapter() throws Exception {
+        ObjectStorage adapter = org.mockito.Mockito.mock(ObjectStorage.class);
+        org.mockito.Mockito.when(adapter.read("k", ByteRange.all()))
+                .thenReturn(new ObjectContent(new ByteArrayInputStream("v".getBytes()), ByteRange.all(), 1));
+        org.mockito.Mockito.when(adapter.listDirectory("p/"))
+                .thenReturn(Stream.of(new CommonPrefix("p/a/")));
+        org.mockito.Mockito.when(adapter.deleteAll(List.of("k"))).thenReturn(new DeleteResult(Map.of()));
+
+        runner.withUserConfiguration(Observations.class)
+                .withBean(ObjectStorage.class, () -> adapter)
+                .run(context -> {
+                    ObjectStorage storage = context.getBean(ObjectStorage.class);
+
+                    try (ObjectContent content = storage.read("k", ByteRange.all())) {
+                        assertThat(content.stream().readAllBytes()).isEqualTo("v".getBytes());
+                    }
+                    assertThat(storage.listDirectory("p/").toList()).containsExactly(new CommonPrefix("p/a/"));
+                    assertThat(storage.deleteAll(List.of("k")).isSuccess()).isTrue();
+
+                    // Os defaults da interface fariam head + open, list e delete no lugar das versões nativas.
+                    org.mockito.Mockito.verify(adapter, org.mockito.Mockito.never()).head("k");
+                    org.mockito.Mockito.verify(adapter, org.mockito.Mockito.never()).list("p/");
+                    org.mockito.Mockito.verify(adapter, org.mockito.Mockito.never()).delete("k");
+                    MeterRegistry registry = context.getBean(MeterRegistry.class);
+                    for (String operation : List.of("read", "listDirectory", "deleteAll")) {
+                        assertThat(registry.get("storage.operations").tag("operation", operation)
+                                .tag("outcome", "success").timer().count()).as(operation).isEqualTo(1);
+                    }
                 });
     }
 
