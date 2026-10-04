@@ -6,6 +6,7 @@ import com.example.storage.ListEntry;
 import com.example.storage.StorageStreams;
 import com.example.storage.Condition;
 import com.example.storage.DeleteResult;
+import com.example.storage.MultipartOutputStream;
 import com.example.storage.MultipartSession;
 import com.example.storage.ObjectInfo;
 import com.example.storage.ObjectContent;
@@ -133,7 +134,8 @@ public final class S3ObjectStorage implements ObjectStorage {
                             .checksumAlgorithm(checksum).build(),
                     RequestBody.fromInputStream(data, length)).eTag();
         } catch (SdkException e) {
-            if (options.condition() instanceof Condition.IfVersionMatches && status(e) == 404) {
+            if (options.condition() instanceof Condition.IfVersionMatches && status(e) == 404
+                    && !"NoSuchBucket".equals(errorCode(e))) {
                 throw new PreconditionFailedException("Pré-condição falhou: " + uri(key) + " não existe", e);
             }
             throw translate(e, "Falha ao gravar " + uri(key));
@@ -197,7 +199,16 @@ public final class S3ObjectStorage implements ObjectStorage {
                 throw new StorageException("Resposta sem Content-Range para " + range.httpValue()
                         + " em " + uri(key), null);
             }
-            return ObjectContent.fromHttp(in, response.contentLength(), response.contentRange());
+            try {
+                return ObjectContent.fromHttp(in, response.contentLength(), response.contentRange());
+            } catch (StorageException e) {
+                throw e;   // RangeNotSatisfiableException: fromHttp já fechou o stream
+            } catch (RuntimeException e) {
+                // Backend compatível com Content-Range malformado ou sem Content-Length
+                in.abort();
+                throw new StorageException("Resposta inválida (Content-Range " + response.contentRange()
+                        + ", Content-Length " + response.contentLength() + ") ao ler " + uri(key), e);
+            }
         } catch (SdkException e) {
             throw translate(e, "Falha ao ler " + uri(key));
         }
@@ -338,6 +349,13 @@ public final class S3ObjectStorage implements ObjectStorage {
         return request;
     }
 
+    /**
+     * Cópia acima de 5 GiB (o limite do CopyObject), parte a parte. Cada parte exige a versão lida no
+     * {@code head}: se a origem for sobrescrita no meio, a cópia falha em vez de juntar partes de duas
+     * versões. Diferente do CopyObject, preserva só content-type, content-disposition e a metadata do
+     * usuário: Cache-Control, Content-Encoding, tags, classe de armazenamento e criptografia SSE-KMS da
+     * origem não são copiados.
+     */
     // ponytail: partes copiadas em sequência; paralelizar se cópias > 5 GiB forem frequentes.
     private void multipartCopy(ObjectInfo source, String targetKey) {
         ObjectMetadata metadata = source.metadata();
@@ -347,11 +365,14 @@ public final class S3ObjectStorage implements ObjectStorage {
                 .metadata(metadata.userMetadata())).uploadId();
         try {
             List<CompletedPart> parts = new ArrayList<>();
+            // 512 MiB, ou o necessário para caber em 10.000 partes (acima de ~4,88 TiB)
+            long partSize = Math.max(COPY_PART_SIZE, Math.ceilDiv(source.size(), MultipartOutputStream.MAX_PARTS));
             int partNumber = 1;
-            for (long offset = 0; offset < source.size(); offset += COPY_PART_SIZE, partNumber++) {
-                String range = "bytes=" + offset + "-" + (Math.min(source.size(), offset + COPY_PART_SIZE) - 1);
+            for (long offset = 0; offset < source.size(); offset += partSize, partNumber++) {
+                String range = "bytes=" + offset + "-" + (Math.min(source.size(), offset + partSize) - 1);
                 int number = partNumber;
                 String etag = s3.uploadPartCopy(b -> b.sourceBucket(bucket).sourceKey(source.key())
+                                .copySourceIfMatch(source.version())
                                 .destinationBucket(bucket).destinationKey(targetKey)
                                 .uploadId(uploadId).partNumber(number).copySourceRange(range))
                         .copyPartResult().eTag();
@@ -360,7 +381,11 @@ public final class S3ObjectStorage implements ObjectStorage {
             s3.completeMultipartUpload(b -> b.bucket(bucket).key(targetKey).uploadId(uploadId)
                     .multipartUpload(m -> m.parts(parts)));
         } catch (SdkException e) {
-            s3.abortMultipartUpload(b -> b.bucket(bucket).key(targetKey).uploadId(uploadId));
+            try {
+                s3.abortMultipartUpload(b -> b.bucket(bucket).key(targetKey).uploadId(uploadId));
+            } catch (SdkException abortFailure) {
+                e.addSuppressed(abortFailure);   // a falha que importa é a da cópia
+            }
             throw e;
         }
     }
@@ -371,6 +396,10 @@ public final class S3ObjectStorage implements ObjectStorage {
 
     private static int status(SdkException e) {
         return e instanceof S3Exception s3e ? s3e.statusCode() : -1;
+    }
+
+    private static String errorCode(SdkException e) {
+        return e instanceof S3Exception s3e && s3e.awsErrorDetails() != null ? s3e.awsErrorDetails().errorCode() : null;
     }
 
     static StorageException translate(SdkException e, String message) {
