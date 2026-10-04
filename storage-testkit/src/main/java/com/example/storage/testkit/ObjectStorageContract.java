@@ -19,6 +19,7 @@ import com.example.storage.PutOptions;
 import com.example.storage.RangeNotSatisfiableException;
 import com.example.storage.StorageException;
 import com.example.storage.UploadedPart;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -70,6 +71,21 @@ public abstract class ObjectStorageContract {
     /** Storage apontando para um bucket que não existe; {@code null} pula o teste. */
     protected ObjectStorage storageWithMissingBucket() {
         return null;
+    }
+
+    /** {@code false} quando a URL de upload não impõe a pré-condição (ex.: PAR da OCI). */
+    protected boolean supportsPresignedConditions() {
+        return supportsHttpPresign() && supportsConditionalWrites();
+    }
+
+    /** Best-effort: apaga o que o teste criou, para não acumular objetos num bucket real. */
+    @AfterEach
+    void apagarOQueOTesteCriou() {
+        try (var objects = storage().list(prefix)) {
+            storage().deleteAll(objects.map(ObjectSummary::key).toList());
+        } catch (RuntimeException ignored) {
+            // a falha que importa é a do teste
+        }
     }
 
     /** Mais de 1000 objetos exercita a paginação de S3, GCS e OCI. */
@@ -377,6 +393,81 @@ public abstract class ObjectStorageContract {
         assertThrows(IllegalArgumentException.class, () -> storage().initiateMultipart(key("invalida"), invalid));
         assertThrows(IllegalArgumentException.class, () -> PutOptions.of(invalid));
         assertTrue(storage().head(key("invalida")).isEmpty());
+    }
+
+    @Test
+    void chavesComCaracteresEspeciaisFuncionamEmTodasAsOperacoes() {
+        List<String> keys = List.of(key("especial/com espaço.txt"), key("especial/acentuação-ç.txt"),
+                key("especial/mais+sinal.txt"), key("especial/por%20cento.txt"), key("especial/til~(par).txt"));
+        for (String key : keys) {
+            storage().put(key, bytes(key), PutOptions.of("text/plain"));
+        }
+
+        for (String key : keys) {
+            assertTrue(storage().head(key).isPresent(), key);
+            assertArrayEquals(bytes(key), read(key, ByteRange.all()), key);
+        }
+        assertEquals(keys.stream().sorted().toList(),
+                storage().list(key("especial/")).map(ObjectSummary::key).toList());
+        assertTrue(storage().deleteAll(keys).isSuccess());
+        assertEquals(0, storage().list(key("especial/")).count());
+    }
+
+    @Test
+    void putIfNotExistsConcorrenteGravaUmaUnicaVez() throws Exception {
+        assumeTrue(supportsConditionalWrites(), "backend sem escrita condicional");
+        String key = key("corrida");
+        int writers = 8;
+        List<Throwable> failures = new ArrayList<>();
+        int written = 0;
+        try (ExecutorService executor = Executors.newFixedThreadPool(writers)) {
+            var futures = IntStream.range(0, writers)
+                    .mapToObj(i -> executor.submit(() ->
+                            storage().put(key, bytes("escritor " + i), PutOptions.of("text/plain").ifNotExists())))
+                    .toList();
+            for (var future : futures) {
+                try {
+                    future.get();
+                    written++;
+                } catch (java.util.concurrent.ExecutionException e) {
+                    failures.add(e.getCause());
+                }
+            }
+        }
+
+        assertEquals(1, written, () -> "falhas: " + failures);
+        failures.forEach(f -> assertInstanceOf(PreconditionFailedException.class, f));
+    }
+
+    @Test
+    void copySobrescreveDestinoExistente() {
+        String source = key("copia/origem.txt");
+        String target = key("copia/destino.txt");
+        storage().put(target, bytes("antigo"),
+                PutOptions.of(new ObjectMetadata("text/csv", null, Map.of("velho", "1"))));
+        storage().put(source, bytes("novo"), PutOptions.of(sampleMetadata()));
+
+        storage().copy(source, target);
+
+        assertArrayEquals(bytes("novo"), read(target, ByteRange.all()));
+        assertEquals(sampleMetadata(), storage().head(target).orElseThrow().metadata());
+    }
+
+    @Test
+    void presignPutComIfNotExistsNaoSobrescreve() throws Exception {
+        assumeTrue(supportsPresignedConditions(), "URL de upload sem pré-condição imposta");
+        String key = key("presign-unico.txt");
+        storage().put(key, bytes("primeiro"), PutOptions.of("text/plain"));
+
+        PresignedRequest presigned = storage().presignPut(key, Duration.ofMinutes(5),
+                PutOptions.of("text/plain").ifNotExists());
+        HttpRequest.Builder request = HttpRequest.newBuilder(presigned.url())
+                .method(presigned.method(), HttpRequest.BodyPublishers.ofByteArray(bytes("segundo")));
+        presigned.headers().forEach(request::header);
+        HttpResponse<String> response = HTTP.send(request.build(), HttpResponse.BodyHandlers.ofString());
+
+        assertTrue(response.statusCode() >= 400, () -> response.statusCode() + ": " + response.body());
+        assertArrayEquals(bytes("primeiro"), read(key, ByteRange.all()));
     }
 
     @Test

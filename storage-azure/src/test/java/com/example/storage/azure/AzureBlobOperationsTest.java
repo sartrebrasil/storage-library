@@ -1,6 +1,8 @@
 package com.example.storage.azure;
 
 import com.azure.core.util.Context;
+import com.azure.core.util.polling.LongRunningOperationStatus;
+import com.azure.core.util.polling.PollResponse;
 import com.azure.core.util.polling.SyncPoller;
 import com.azure.storage.blob.BlobClient;
 import com.azure.storage.blob.BlobContainerClient;
@@ -93,6 +95,15 @@ class AzureBlobOperationsTest {
         when(poller.waitForCompletion(any())).thenThrow(pollFailure);
 
         assertThrows(ObjectNotFoundException.class, () -> storage.copy("origem", "destino"));
+    }
+
+    @Test
+    void copiaQueTerminaComFalhaViraStorageException() {
+        when(poller.waitForCompletion(any())).thenReturn(new PollResponse<>(LongRunningOperationStatus.FAILED, null));
+
+        StorageException e = assertThrows(StorageException.class, () -> storage.copy("origem", "destino"));
+
+        assertTrue(e.getMessage().contains("FAILED"), e.getMessage());
     }
 
     @Test

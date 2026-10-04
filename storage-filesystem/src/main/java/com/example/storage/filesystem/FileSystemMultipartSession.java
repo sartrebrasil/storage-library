@@ -76,7 +76,7 @@ final class FileSystemMultipartSession implements MultipartSession {
                 }
             }
             synchronized (writeLock) {
-                FileSystemObjectStorage.publish(temp, targetPath, metadata);
+                FileSystemObjectStorage.publish(temp, targetPath, metadata, false);
             }
         } catch (IOException e) {
             deleteQuietly(temp);

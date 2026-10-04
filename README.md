@@ -366,4 +366,8 @@ com connection string o SAS usa a chave da conta; com `endpoint`, user delegatio
 
 `mvn install` roda os testes de contrato contra MinIO, LocalStack 3.0, Azurite e um servidor
 OpenSSH sftp-server real (imagem `atmoz/sftp`) via Testcontainers (pulados sem Docker). GCS e
-OCI não têm emulador compatível: são cobertos por testes com mocks e assinatura local real.
+OCI não têm emulador compatível: são cobertos por testes com mocks e assinatura local real, e por um
+contrato opt-in contra bucket real (`GcsBucketContractTest` com `STORAGE_GCS_BUCKET` e as Application
+Default Credentials; `OciBucketContractTest` com `STORAGE_OCI_BUCKET` e o `~/.oci/config`, perfil em
+`STORAGE_OCI_PROFILE`). Sem as variáveis, esses contratos aparecem como pulados. Todo contrato apaga os
+objetos que criou.
