@@ -1,6 +1,6 @@
 # Plano: correções do code review completo
 
-- **Status:** ativo; R0 a R5 concluídas; próxima: R6
+- **Status:** ativo; R0 a R6 concluídas; próximas: R7 e R8
 - **Criado em:** 03/10/2026
 - **Origem:** code review completo dos 11 módulos (commit `f0884ec`). Itens marcados com ✔ foram
   confirmados no código ou nos fontes dos SDKs em `~/.m2` (AWS 2.55, GCS 2.74, Azure Blob 12.35,
@@ -33,7 +33,7 @@ reduzir a duplicação entre adapters e fechar as lacunas de teste que deixaram 
 | R3 | Adapters de nuvem | A4, A10, A11, M3–M6 | R1 (A3) | Concluída |
 | R4 | SFTP operacional | A9, M10 | R2 | Concluída |
 | R5 | Spring: robustez e observabilidade | M1, M2, B-Spring | R0 (C2, C3) | Concluída |
-| R6 | Baixa severidade restante | B-* | R1–R5 | Pendente |
+| R6 | Baixa severidade restante | B-* | R1–R5 | Concluída |
 | R7 | Refatoração: duplicação para o core | F1–F7 | R2, R3 | Pendente |
 | R8 | Lacunas de teste | T1–T4 | paralela a todas | Pendente |
 
@@ -70,7 +70,14 @@ reduzir a duplicação entre adapters e fechar as lacunas de teste que deixaram 
 | M1 | Feito | `6a3df1c` |
 | M2 | Feito como documentação no javadoc de `list`/`listDirectory` | `4f909f0` |
 | B-Spring | Feito: `Error`, `AtomicBoolean`, `SIZED`, `toString`, `azure-identity` (`4f909f0`); `ETag`/`If-Range` (`6a3df1c`) | `4f909f0`, `6a3df1c` |
-| R6, R7, R8 | Pendente | |
+| R6 core e InMemory | Feito: `skip` limitado (`StorageStreams.bounded`), `fromHttp`, ordem do `DeleteResult`, InMemory | `b63d5d0` |
+| R6 filesystem | Feito: chaves que viram outro arquivo, symlink, pasta como objeto, `AccessDenied`, pastas vazias, `list` com arquivo apagado, lock de `copy`/`complete`, partes mantidas | `fac3146` |
+| R6 SFTP | Feito: pastas vazias, pasta como objeto, pasta apagada no `list`, partes mantidas; `root="/"` já funcionava | `210eb2b` |
+| R6 S3 | Feito | `980483f` |
+| R6 GCS | Feito | `a94baea` |
+| R6 Azure | Feito | `5797b69` |
+| R6 OCI | Feito | `d0476dd` |
+| R7, R8 | Pendente | |
 
 ## R0 — Críticos
 
@@ -211,3 +218,9 @@ reduzir a duplicação entre adapters e fechar as lacunas de teste que deixaram 
   attachment, permit)`, e não como sobrecarga de `attachment`: com `null` no lugar do `Range`, a
   sobrecarga deixaria ambíguas chamadas que já existem. Todas as respostas passam a ter `ETag` e
   `Last-Modified`.
+- **04/10/2026 — R6 concluída.** `BoundedInputStream` saiu das duas cópias para `StorageStreams.bounded`,
+  adiantando parte de F1. Desvios: o `root="/"` do SFTP já gerava as chaves certas (o teste de contrato
+  ficou como regressão); o teste de symlink do filesystem é pulado no Windows sem permissão para criá-lo;
+  no filesystem, um arquivo apagado durante o `list` é ignorado, mas uma pasta apagada no meio do
+  `Files.walk` ainda falha a listagem. O symlink só é conferido na leitura (`head`, `open`, origem do
+  `copy`); escrever através de uma pasta que é symlink continua possível para quem tem escrita no root.
