@@ -8,6 +8,8 @@ import com.azure.storage.blob.models.BlobCopyInfo;
 import com.azure.storage.blob.models.BlobErrorCode;
 import com.azure.storage.blob.models.BlobProperties;
 import com.azure.storage.blob.models.BlobStorageException;
+import com.azure.storage.blob.options.BlobInputStreamOptions;
+import com.azure.storage.blob.specialized.BlobInputStream;
 import com.azure.storage.blob.specialized.BlockBlobClient;
 import com.example.storage.ObjectMetadata;
 import com.example.storage.ObjectNotFoundException;
@@ -114,5 +116,53 @@ class AzureBlobOperationsTest {
                 () -> session.complete(List.of(new UploadedPart(1, "b1", null))));
 
         assertTrue(e.getMessage().contains("outro upload"), e.getMessage());
+    }
+
+    @Test
+    void deleteDistingueBlobDeContainerInexistente() {
+        BlobStorageException blobMissing = blobError(404, BlobErrorCode.BLOB_NOT_FOUND);
+        BlobStorageException containerMissing = blobError(404, BlobErrorCode.CONTAINER_NOT_FOUND);
+        doThrow(blobMissing).doThrow(containerMissing).when(target).delete();
+
+        assertDoesNotThrow(() -> storage.delete("destino"));
+        assertThrows(StorageException.class, () -> storage.delete("destino"));
+    }
+
+    @Test
+    void sessaoAbortadaNaoListaNemConcluiPartes() {
+        var session = storage.initiateMultipart("destino", ObjectMetadata.empty());
+
+        session.abort();
+
+        assertEquals(List.of(), session.listParts());
+        assertThrows(StorageException.class, () -> session.complete(List.of(new UploadedPart(1, "b1", null))));
+        verify(targetBlock, never()).commitBlockListWithResponse(any(), any(), any(Context.class));
+    }
+
+    @Test
+    void listPartsComContainerInexistenteFalha() {
+        BlobStorageException containerMissing = blobError(404, BlobErrorCode.CONTAINER_NOT_FOUND);
+        when(targetBlock.listBlocks(any())).thenThrow(containerMissing);
+
+        var session = storage.initiateMultipart("destino", ObjectMetadata.empty());
+
+        assertThrows(StorageException.class, session::listParts);
+    }
+
+    @Test
+    void leituraDeSufixoRepeteQuandoOBlobMudaEntreAsDuasChamadas() {
+        BlobProperties first = mock(BlobProperties.class);
+        when(first.getBlobSize()).thenReturn(10L);
+        when(first.getETag()).thenReturn("\"e1\"");
+        when(target.getProperties()).thenReturn(first);
+        BlobInputStream stream = mock(BlobInputStream.class);
+        when(stream.getProperties()).thenReturn(first);
+        BlobStorageException changed = blobError(412, BlobErrorCode.CONDITION_NOT_MET);
+        when(target.openInputStream(any(BlobInputStreamOptions.class))).thenThrow(changed).thenReturn(stream);
+
+        var content = storage.read("destino", com.example.storage.ByteRange.suffix(3));
+
+        assertEquals(3, content.contentLength());
+        verify(target, times(2)).openInputStream(any(BlobInputStreamOptions.class));
     }
 }
