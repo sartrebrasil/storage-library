@@ -73,7 +73,10 @@ public final class ObjectResponses {
         attachment.headers().forEach(headers::set);
 
         InputStream body = permit == null ? content.stream() : new ReleasingInputStream(content.stream(), permit);
-        Resource resource = new ObjectContentResource(body, content.contentLength(), attachment.fileName());
+        // A classe exata InputStreamResource, não uma subclasse: só para ela o Spring MVC não reaplica o Range da
+        // requisição (o que transformaria um Range malformado em 416 e um multi-faixa em 206 multipart) nem tenta
+        // calcular o tamanho lendo o stream, então o Content-Length acima vale.
+        Resource resource = new InputStreamResource(body);
         return new ResponseEntity<>(resource, headers, content.isPartial() ? HttpStatus.PARTIAL_CONTENT : HttpStatus.OK);
     }
 
@@ -111,29 +114,6 @@ public final class ObjectResponses {
             } finally {
                 permit.close();
             }
-        }
-    }
-
-    /** Tamanho e nome conhecidos: o Spring não tenta ler o stream para descobrir o {@code Content-Length}. */
-    private static final class ObjectContentResource extends InputStreamResource {
-
-        private final long contentLength;
-        private final String fileName;
-
-        ObjectContentResource(InputStream stream, long contentLength, String fileName) {
-            super(stream);
-            this.contentLength = contentLength;
-            this.fileName = fileName;
-        }
-
-        @Override
-        public long contentLength() {
-            return contentLength;
-        }
-
-        @Override
-        public String getFilename() {
-            return fileName;
         }
     }
 }
