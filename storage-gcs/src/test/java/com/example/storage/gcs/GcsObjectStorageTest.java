@@ -1,5 +1,6 @@
 package com.example.storage.gcs;
 
+import com.example.storage.AccessDeniedException;
 import com.example.storage.MultipartSession;
 import com.example.storage.ObjectMetadata;
 import com.example.storage.StorageException;
@@ -108,5 +109,13 @@ class GcsObjectStorageTest {
 
         StorageException e = assertThrows(StorageException.class, () -> session.uploadPart(1, new byte[1], 1));
         assertInstanceOf(com.google.cloud.storage.StorageException.class, e.getCause());
+    }
+
+    @Test
+    void falhaNoEnvioMantemOTipoDaExcecao() {
+        when(client.uploadPart(any(), any()))
+                .thenThrow(new com.google.cloud.storage.StorageException(403, "forbidden"));
+
+        assertThrows(AccessDeniedException.class, () -> session.uploadPart(1, new byte[1], 1));
     }
 }

@@ -1,5 +1,6 @@
 package com.example.storage.oci;
 
+import com.example.storage.AccessDeniedException;
 import com.example.storage.MultipartSession;
 import com.example.storage.ObjectMetadata;
 import com.example.storage.StorageException;
@@ -120,5 +121,12 @@ class OciObjectStorageTest {
 
         StorageException e = assertThrows(StorageException.class, () -> session.uploadPart(1, new byte[1], 1));
         assertInstanceOf(BmcException.class, e.getCause());
+    }
+
+    @Test
+    void falhaNoEnvioMantemOTipoDaExcecao() {
+        when(client.uploadPart(any())).thenThrow(new BmcException(403, "NotAuthorized", "denied", "req"));
+
+        assertThrows(AccessDeniedException.class, () -> session.uploadPart(1, new byte[1], 1));
     }
 }

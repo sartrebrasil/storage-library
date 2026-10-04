@@ -1,7 +1,6 @@
 package com.example.storage.gcs;
 
 import com.example.storage.MultipartSession;
-import com.example.storage.StorageException;
 import com.example.storage.UploadedPart;
 import com.google.cloud.BaseServiceException;
 import com.google.cloud.storage.MultipartUploadClient;
@@ -64,7 +63,7 @@ final class GcsMultipartSession implements MultipartSession {
             UploadPartResponse response = client.uploadPart(request, body);
             return new UploadedPart(partNumber, response.eTag(), response.crc32c());
         } catch (BaseServiceException e) {
-            throw new StorageException("Falha ao enviar parte " + partNumber + " de " + key, e);
+            throw GcsObjectStorage.translate(e, "Falha ao enviar parte " + partNumber + " de " + key);
         }
     }
 
@@ -82,7 +81,7 @@ final class GcsMultipartSession implements MultipartSession {
                     .multipartUpload(CompletedMultipartUpload.builder().parts(completed).build())
                     .build());
         } catch (BaseServiceException e) {
-            throw new StorageException("Falha ao concluir upload de " + key, e);
+            throw GcsObjectStorage.translate(e, "Falha ao concluir upload de " + key);
         }
     }
 
@@ -96,7 +95,7 @@ final class GcsMultipartSession implements MultipartSession {
                     .build());
         } catch (BaseServiceException e) {
             if (e.getCode() != NOT_FOUND) {   // 404: já abortado/concluído (idempotente)
-                throw new StorageException("Falha ao abortar upload de " + key, e);
+                throw GcsObjectStorage.translate(e, "Falha ao abortar upload de " + key);
             }
         }
     }
@@ -122,7 +121,7 @@ final class GcsMultipartSession implements MultipartSession {
             if (e.getCode() == NOT_FOUND) {
                 return List.of();   // concluído/abortado
             }
-            throw new StorageException("Falha ao listar partes do upload de " + key, e);
+            throw GcsObjectStorage.translate(e, "Falha ao listar partes do upload de " + key);
         }
     }
 }
