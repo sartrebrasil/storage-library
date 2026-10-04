@@ -14,6 +14,7 @@ import com.example.storage.PresignedRequest;
 import com.example.storage.PutOptions;
 import com.example.storage.StorageException;
 import net.schmizz.sshj.SSHClient;
+import net.schmizz.sshj.sftp.FileAttributes;
 import net.schmizz.sshj.sftp.FileMode;
 import net.schmizz.sshj.sftp.OpenMode;
 import net.schmizz.sshj.sftp.RemoteFile;
@@ -50,7 +51,12 @@ import java.util.stream.Stream;
  *
  * <p>Como o SFTP não guarda versão nem metadata arbitrária do objeto, cada arquivo tem um
  * sidecar {@code <arquivo>.objmeta} (formato {@link Properties}), igual ao adapter de
- * filesystem local. Escrita é sempre: grava num arquivo temporário em
+ * filesystem local, com o tamanho e a data de modificação do arquivo que descreve. O sidecar é
+ * gravado num temporário e renomeado depois dos dados; um sidecar que não bate com o arquivo
+ * (trocado por fora da API, ou queda entre as duas renomeações) é ignorado, e a versão passa a
+ * ser derivada da data de modificação, a mesma que {@link Condition.IfVersionMatches} compara.
+ * Nomes terminados em {@code .objmeta} ou começados por {@code .pending-} são reservados.
+ * Escrita é sempre: grava num arquivo temporário em
  * {@code .pending-<uuid>} e {@code rename} para o destino — sem {@code OVERWRITE} quando a
  * condição é {@link Condition.IfNotExists}, então o próprio servidor rejeita se o destino já
  * existir (equivalente ao {@code SSH_FX_FILE_ALREADY_EXISTS}); com {@code OVERWRITE}+
@@ -121,7 +127,7 @@ public final class SftpObjectStorage implements ObjectStorage {
     public Optional<ObjectInfo> head(String key) {
         String path = resolve(key);
         return withSftp("Falha ao consultar " + key, sftp -> {
-            net.schmizz.sshj.sftp.FileAttributes attrs;
+            FileAttributes attrs;
             try {
                 attrs = sftp.stat(path);
             } catch (SFTPException e) {
@@ -133,10 +139,10 @@ public final class SftpObjectStorage implements ObjectStorage {
             if (attrs.getType() != FileMode.Type.REGULAR) {
                 return Optional.empty();
             }
-            Properties props = loadMetadata(sftp, path);
+            Properties props = describing(loadMetadata(sftp, path), attrs);
             Instant lastModified = Instant.ofEpochSecond(attrs.getMtime());
-            String version = props.getProperty("version", "v" + lastModified.toEpochMilli());
-            return Optional.of(new ObjectInfo(key, attrs.getSize(), version, lastModified, metadataFrom(props)));
+            return Optional.of(new ObjectInfo(key, attrs.getSize(), versionOf(props, attrs), lastModified,
+                    metadataFrom(props)));
         });
     }
 
@@ -200,18 +206,26 @@ public final class SftpObjectStorage implements ObjectStorage {
         String source = resolve(sourceKey);
         String target = resolve(targetKey);
         withSftp("Falha ao copiar " + sourceKey + " para " + targetKey, sftp -> {
+            FileAttributes attrs;
             try {
-                sftp.stat(source);
+                attrs = sftp.stat(source);
             } catch (SFTPException e) {
                 if (isNotFound(e)) {
                     throw new ObjectNotFoundException("Origem da cópia não existe: " + sourceKey, e);
                 }
                 throw e;
             }
+            ObjectMetadata metadata = metadataFrom(describing(loadMetadata(sftp, source), attrs));
             mkdirs(sftp, parentOf(target));
-            copyRemoteFile(sftp, source, target);
-            ObjectMetadata metadata = metadataFrom(loadMetadata(sftp, source));
-            writeMetadata(sftp, target, metadata, UUID.randomUUID().toString());
+            // Temporário + rename: quem lê nunca vê o destino pela metade, e copy(k, k) não trunca a origem.
+            String temp = tempPath(target);
+            try {
+                copyRemoteFile(sftp, source, temp);
+                publish(sftp, temp, target, metadata, false);
+            } catch (IOException | RuntimeException e) {
+                rmQuietly(sftp, temp);
+                throw e;
+            }
             return null;
         });
     }
@@ -240,53 +254,108 @@ public final class SftpObjectStorage implements ObjectStorage {
             if (segment.isEmpty() || segment.equals(".") || segment.equals("..")) {
                 throw new IllegalArgumentException("Chave inválida (path traversal): " + key);
             }
+            if (segment.endsWith(META_SUFFIX) || segment.startsWith(TEMP_PREFIX)) {
+                throw new IllegalArgumentException("Chave usa um nome reservado (" + META_SUFFIX + " ou "
+                        + TEMP_PREFIX + "): " + key);
+            }
         }
         return root + "/" + key;
     }
 
+    /** A versão que {@link #head} devolveria, ou {@code null} se o arquivo não existe. */
     private String currentVersion(String path) {
-        return withSftp("Falha ao ler versão atual de " + path, sftp -> loadMetadata(sftp, path).getProperty("version"));
+        return withSftp("Falha ao ler versão atual de " + path, sftp -> {
+            FileAttributes attrs;
+            try {
+                attrs = sftp.stat(path);
+            } catch (SFTPException e) {
+                if (isNotFound(e)) {
+                    return null;
+                }
+                throw e;
+            }
+            return versionOf(describing(loadMetadata(sftp, path), attrs), attrs);
+        });
     }
 
     private String writeData(String path, InputStream data, long length, ObjectMetadata metadata, boolean failIfExists) {
-        String parent = parentOf(path);
-        String temp = parent + "/" + TEMP_PREFIX + UUID.randomUUID();
-        long written = withSftp("Falha ao gravar " + path, sftp -> {
-            mkdirs(sftp, parent);
-            long count;
-            try (RemoteFile file = sftp.open(temp, Set.of(OpenMode.WRITE, OpenMode.CREAT, OpenMode.TRUNC))) {
-                try (OutputStream out = file.new RemoteFileOutputStream()) {
-                    count = data.transferTo(out);
-                }
-            }
-            if (count == length) {
-                try {
-                    if (failIfExists) {
-                        sftp.rename(temp, path);
-                    } else {
-                        sftp.rename(temp, path, Set.of(RenameFlags.OVERWRITE, RenameFlags.ATOMIC));
+        String temp = tempPath(path);
+        return withSftp("Falha ao gravar " + path, sftp -> {
+            mkdirs(sftp, parentOf(path));
+            try {
+                long count;
+                try (RemoteFile file = sftp.open(temp, Set.of(OpenMode.WRITE, OpenMode.CREAT, OpenMode.TRUNC))) {
+                    try (OutputStream out = file.new RemoteFileOutputStream()) {
+                        count = data.transferTo(out);
                     }
-                } catch (IOException e) {
-                    rmQuietly(sftp, temp);
-                    // rename() sem OVERWRITE só tem um jeito de falhar: destino já existe. O
-                    // OpenSSH sftp-server responde isso como SSH_FX_FAILURE genérico em vez de
-                    // FILE_ALREADY_EXISTS, então mapeia direto em vez de confiar no status code.
-                    if (failIfExists) {
-                        throw new PreconditionFailedException("Pré-condição ifNotExists falhou em " + path, e);
-                    }
-                    throw e;
                 }
+                if (count != length) {
+                    throw new StorageException("Tamanho informado (" + length + ") difere do conteúdo ("
+                            + count + ") em " + path, null);
+                }
+                return publish(sftp, temp, path, metadata, failIfExists);
+            } catch (IOException | RuntimeException e) {
+                rmQuietly(sftp, temp);   // inclusive quando o stream de entrada falha no meio
+                throw e;
             }
-            return count;
         });
-        if (written != length) {
-            deleteQuietly(temp);
-            throw new StorageException("Tamanho informado (" + length + ") difere do conteúdo ("
-                    + written + ") em " + path, null);
-        }
+    }
+
+    /**
+     * Põe {@code temp} no lugar de {@code target} com um sidecar novo, e devolve a versão. O sidecar vai
+     * antes para um temporário e é renomeado depois dos dados: uma queda entre as duas renomeações deixa
+     * um sidecar que não bate com o arquivo, e que por isso é ignorado. Chamado também por
+     * {@link SftpMultipartSession#complete}.
+     */
+    static String publish(SFTPClient sftp, String temp, String target, ObjectMetadata metadata, boolean failIfExists)
+            throws IOException {
+        FileAttributes data = sftp.stat(temp);
         String version = UUID.randomUUID().toString();
-        writeMetadata(path, metadata, version);
+        String metaTemp = tempPath(target);
+        try {
+            writeMetadata(sftp, metaTemp, metadata, version, data);
+            if (failIfExists) {
+                renameIfAbsent(sftp, temp, target);
+            } else {
+                sftp.rename(temp, target, Set.of(RenameFlags.OVERWRITE, RenameFlags.ATOMIC));
+            }
+            sftp.rename(metaTemp, metaPath(target), Set.of(RenameFlags.OVERWRITE, RenameFlags.ATOMIC));
+        } catch (IOException | RuntimeException e) {
+            rmQuietly(sftp, metaTemp);
+            throw e;
+        }
         return version;
+    }
+
+    /**
+     * {@code rename} sem {@code OVERWRITE} falha se o destino existe, mas o OpenSSH responde isso como
+     * {@code SSH_FX_FAILURE} genérico, igual a uma queda ou disco cheio: só é precondição se o destino existe.
+     */
+    private static void renameIfAbsent(SFTPClient sftp, String temp, String target) throws IOException {
+        try {
+            sftp.rename(temp, target);
+        } catch (IOException e) {
+            if (exists(sftp, target)) {
+                throw new PreconditionFailedException("Pré-condição ifNotExists falhou em " + target, e);
+            }
+            throw e;
+        }
+    }
+
+    private static boolean exists(SFTPClient sftp, String path) throws IOException {
+        try {
+            sftp.stat(path);
+            return true;
+        } catch (SFTPException e) {
+            if (isNotFound(e)) {
+                return false;
+            }
+            throw e;
+        }
+    }
+
+    static String tempPath(String target) {
+        return parentOf(target) + "/" + TEMP_PREFIX + UUID.randomUUID();
     }
 
     private void walk(SFTPClient sftp, String dirPath, List<ObjectSummary> sink) throws IOException {
@@ -302,10 +371,9 @@ public final class SftpObjectStorage implements ObjectStorage {
                 walk(sftp, entry.getPath(), sink);
             } else if (entry.isRegularFile() && isDataFile(name)) {
                 String key = entry.getPath().substring(root.length() + 1);
-                Properties props = loadMetadata(sftp, entry.getPath());
-                Instant lastModified = Instant.ofEpochSecond(entry.getAttributes().getMtime());
-                String version = props.getProperty("version", "v" + lastModified.toEpochMilli());
-                sink.add(new ObjectSummary(key, entry.getAttributes().getSize(), version, lastModified));
+                FileAttributes attrs = entry.getAttributes();
+                String version = versionOf(describing(loadMetadata(sftp, entry.getPath()), attrs), attrs);
+                sink.add(new ObjectSummary(key, attrs.getSize(), version, Instant.ofEpochSecond(attrs.getMtime())));
             }
         }
     }
@@ -314,24 +382,13 @@ public final class SftpObjectStorage implements ObjectStorage {
         return !name.endsWith(META_SUFFIX) && !name.startsWith(TEMP_PREFIX);
     }
 
-    /**
-     * Copia para um temporário e renomeia sobre o destino: quem lê nunca vê o destino pela metade,
-     * e {@code copy(k, k)} não trunca a origem antes de lê-la.
-     */
     private static void copyRemoteFile(SFTPClient sftp, String source, String target) throws IOException {
-        String temp = parentOf(target) + "/" + TEMP_PREFIX + UUID.randomUUID();
-        try {
-            try (RemoteFile in = sftp.open(source, Set.of(OpenMode.READ));
-                 RemoteFile out = sftp.open(temp, Set.of(OpenMode.WRITE, OpenMode.CREAT, OpenMode.TRUNC))) {
-                try (InputStream is = in.new RemoteFileInputStream();
-                     OutputStream os = out.new RemoteFileOutputStream()) {
-                    is.transferTo(os);
-                }
+        try (RemoteFile in = sftp.open(source, Set.of(OpenMode.READ));
+             RemoteFile out = sftp.open(target, Set.of(OpenMode.WRITE, OpenMode.CREAT, OpenMode.TRUNC))) {
+            try (InputStream is = in.new RemoteFileInputStream();
+                 OutputStream os = out.new RemoteFileOutputStream()) {
+                is.transferTo(os);
             }
-            sftp.rename(temp, target, Set.of(RenameFlags.OVERWRITE, RenameFlags.ATOMIC));
-        } catch (IOException e) {
-            rmQuietly(sftp, temp);
-            throw e;
         }
     }
 
@@ -353,27 +410,12 @@ public final class SftpObjectStorage implements ObjectStorage {
         }
     }
 
-    private void deleteQuietly(String path) {
-        try {
-            withSftp("cleanup", sftp -> {
-                rmQuietly(sftp, path);
-                return null;
-            });
-        } catch (RuntimeException ignored) {
-            // best-effort: uma escrita que já falhou não precisa falhar de novo na limpeza
-        }
-    }
-
-    private void writeMetadata(String path, ObjectMetadata metadata, String version) {
-        withSftp("Falha ao gravar metadata de " + path, sftp -> {
-            writeMetadata(sftp, path, metadata, version);
-            return null;
-        });
-    }
-
-    static void writeMetadata(SFTPClient sftp, String path, ObjectMetadata metadata, String version) throws IOException {
+    private static void writeMetadata(SFTPClient sftp, String file, ObjectMetadata metadata, String version,
+                                      FileAttributes data) throws IOException {
         Properties props = new Properties();
         props.setProperty("version", version);
+        props.setProperty("size", String.valueOf(data.getSize()));
+        props.setProperty("mtime", String.valueOf(data.getMtime()));
         if (metadata.contentType() != null) {
             props.setProperty("contentType", metadata.contentType());
         }
@@ -383,11 +425,28 @@ public final class SftpObjectStorage implements ObjectStorage {
         metadata.userMetadata().forEach((k, v) -> props.setProperty("user." + k, v));
         ByteArrayOutputStream buffer = new ByteArrayOutputStream();
         props.store(buffer, null);
-        try (RemoteFile file = sftp.open(metaPath(path), Set.of(OpenMode.WRITE, OpenMode.CREAT, OpenMode.TRUNC))) {
-            try (OutputStream out = file.new RemoteFileOutputStream()) {
+        try (RemoteFile remote = sftp.open(file, Set.of(OpenMode.WRITE, OpenMode.CREAT, OpenMode.TRUNC))) {
+            try (OutputStream out = remote.new RemoteFileOutputStream()) {
                 out.write(buffer.toByteArray());
             }
         }
+    }
+
+    /**
+     * {@code props} se ele descreve o arquivo (mesmo tamanho e data de modificação, em segundos), senão
+     * vazio. Sidecars gravados antes de guardarem tamanho e data valem como estão.
+     */
+    private static Properties describing(Properties props, FileAttributes data) {
+        String size = props.getProperty("size");
+        String mtime = props.getProperty("mtime");
+        boolean stale = (size != null && !size.equals(String.valueOf(data.getSize())))
+                || (mtime != null && !mtime.equals(String.valueOf(data.getMtime())));
+        return stale ? new Properties() : props;
+    }
+
+    /** A versão do sidecar ou, sem ele, uma derivada da data de modificação. */
+    private static String versionOf(Properties sidecar, FileAttributes data) {
+        return sidecar.getProperty("version", "v" + data.getMtime() * 1000);
     }
 
     private static Properties loadMetadata(SFTPClient sftp, String dataPath) throws IOException {
@@ -415,20 +474,36 @@ public final class SftpObjectStorage implements ObjectStorage {
     }
 
     /**
-     * {@code SFTPClient.mkdirs} não é idempotente como {@code Files.createDirectories}: falha
-     * se algum segmento do caminho já existir. Chamado também por {@link SftpMultipartSession}.
+     * Cria {@code path} e os pais que faltarem, aceitando os que já existem. Componente a componente, e não
+     * {@code SFTPClient.mkdirs}: este checa e cria cada nível em passos separados, então duas partes de
+     * multipart enviadas em paralelo criando o mesmo {@code .uploads/<id>} fazem uma delas falhar.
+     * Chamado também por {@link SftpMultipartSession}.
      */
     static void mkdirs(SFTPClient sftp, String path) throws IOException {
-        try {
-            sftp.mkdirs(path);
-        } catch (SFTPException e) {
+        StringBuilder current = new StringBuilder();
+        for (String segment : path.split("/")) {
+            if (segment.isEmpty()) {
+                continue;
+            }
+            String dir = current.append('/').append(segment).toString();
             try {
-                if (sftp.stat(path).getType() != FileMode.Type.DIRECTORY) {
+                sftp.mkdir(dir);
+            } catch (SFTPException e) {
+                if (!isDirectory(sftp, dir)) {
                     throw e;
                 }
-            } catch (SFTPException stillMissing) {
-                throw e;
             }
+        }
+    }
+
+    private static boolean isDirectory(SFTPClient sftp, String path) throws IOException {
+        try {
+            return sftp.stat(path).getType() == FileMode.Type.DIRECTORY;
+        } catch (SFTPException e) {
+            if (isNotFound(e)) {
+                return false;
+            }
+            throw e;
         }
     }
 

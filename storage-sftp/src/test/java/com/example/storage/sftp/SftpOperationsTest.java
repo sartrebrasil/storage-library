@@ -43,6 +43,14 @@ class SftpOperationsTest {
     }
 
     @Test
+    void chaveComNomeReservadoDoSidecarOuTemporarioEhRejeitada() {
+        assertThrows(IllegalArgumentException.class,
+                () -> storage.put("a.txt.objmeta", new byte[0], PutOptions.of("text/plain")));
+        assertThrows(IllegalArgumentException.class,
+                () -> storage.put("dir/.pending-x", new byte[0], PutOptions.of("text/plain")));
+    }
+
+    @Test
     void chaveComBarraInvertidaEhRejeitada() {
         assertThrows(IllegalArgumentException.class,
                 () -> storage.put("a\\b.txt", new byte[0], PutOptions.of("text/plain")));
