@@ -1,11 +1,13 @@
 package com.example.storage.sftp;
 
+import com.example.storage.MultipartSession;
 import com.example.storage.ObjectInfo;
 import com.example.storage.ObjectMetadata;
 import com.example.storage.ObjectStorage;
 import com.example.storage.PreconditionFailedException;
 import com.example.storage.PutOptions;
 import com.example.storage.StorageException;
+import com.example.storage.UploadedPart;
 import com.example.storage.testkit.ObjectStorageContract;
 import net.schmizz.sshj.SSHClient;
 import net.schmizz.sshj.sftp.OpenMode;
@@ -29,6 +31,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.stream.IntStream;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -140,6 +146,24 @@ class SftpContractTest extends ObjectStorageContract {
 
         try (SFTPClient sftp = sshClient.newSFTPClient()) {
             assertEquals(List.of(), sftp.ls("/upload/" + dir).stream().map(RemoteResourceInfo::getName).toList());
+        }
+    }
+
+    @Test
+    void partesEmParaleloCriamOMesmoDiretorioDeUploadSemFalhar() throws Exception {
+        // Cada parte cria .uploads/<id>; antes, duas criando ao mesmo tempo faziam uma falhar no mkdir.
+        for (int round = 0; round < 5; round++) {
+            MultipartSession session = storage.initiateMultipart("paralelo/" + UUID.randomUUID(), ObjectMetadata.empty());
+            try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
+                List<Future<UploadedPart>> parts = IntStream.rangeClosed(1, 8)
+                        .mapToObj(n -> executor.submit(() -> session.uploadPart(n, new byte[1], 1)))
+                        .toList();
+                for (Future<UploadedPart> part : parts) {
+                    part.get();
+                }
+            } finally {
+                session.abort();
+            }
         }
     }
 
