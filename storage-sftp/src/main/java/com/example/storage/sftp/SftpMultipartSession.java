@@ -96,10 +96,10 @@ final class SftpMultipartSession implements MultipartSession {
             SftpObjectStorage.publish(sftp, temp, targetPath, metadata, false);
         } catch (IOException e) {
             deleteQuietly(temp);
+            // As partes ficam: o complete pode ser repetido, e o abort as apaga.
             throw new StorageException("Falha ao concluir upload de " + key, e);
-        } finally {
-            deleteUploadDir();
         }
+        deleteUploadDir();
     }
 
     @Override
