@@ -8,6 +8,7 @@ import com.example.storage.PutOptions;
 import com.example.storage.RangeNotSatisfiableException;
 import com.example.storage.memory.InMemoryObjectStorage;
 import org.junit.jupiter.api.Test;
+import org.springframework.core.io.InputStreamResource;
 import org.springframework.core.io.Resource;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
@@ -54,8 +55,6 @@ class ObjectResponsesTest {
         assertEquals("bytes", headers.getFirst(HttpHeaders.ACCEPT_RANGES));
         assertNull(headers.getFirst(HttpHeaders.CONTENT_RANGE));
         assertEquals("abc", headers.getFirst("X-Report-Checksum-Sha256"));
-        assertEquals(10, response.getBody().contentLength());
-        assertEquals("report-1.csv", response.getBody().getFilename());
         assertArrayEquals(DATA, body(response));
     }
 
@@ -75,6 +74,21 @@ class ObjectResponsesTest {
 
         assertEquals(HttpStatus.OK, response.getStatusCode());
         assertArrayEquals(DATA, body(response));
+    }
+
+    /**
+     * O Spring MVC reaplica o {@code Range} da requisição a todo {@code Resource} devolvido com 200, exceto a
+     * classe exata {@link InputStreamResource} (AbstractMessageConverterMethodProcessor#isResourceType): uma
+     * subclasse faria o Range malformado, multi-faixa ou {@code bytes=0-} virar 416 ou 206 multipart, com o
+     * {@code Content-Length} do objeto inteiro.
+     */
+    @Test
+    void corpoEhInputStreamResourceParaOSpringNaoReprocessarORange() {
+        for (String range : new String[] {null, "bytes=abc", "bytes=0-1,5-6", "bytes=0-", "bytes=2-4"}) {
+            ResponseEntity<Resource> response = ObjectResponses.attachment(storage, stored(), range, attachment);
+
+            assertSame(InputStreamResource.class, response.getBody().getClass(), range);
+        }
     }
 
     @Test
