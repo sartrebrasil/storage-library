@@ -2,9 +2,11 @@ package com.example.storage.filesystem;
 
 import com.example.storage.ObjectInfo;
 import com.example.storage.ObjectMetadata;
+import com.example.storage.ObjectNotFoundException;
 import com.example.storage.ObjectStorage;
 import com.example.storage.PreconditionFailedException;
 import com.example.storage.PutOptions;
+import com.example.storage.StorageException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -104,6 +106,63 @@ class FileSystemOperationsTest {
         Path reference = Files.createFile(root.resolve("referencia"));
 
         assertEquals(Files.getPosixFilePermissions(reference), Files.getPosixFilePermissions(root.resolve("multi.txt")));
+    }
+
+    @Test
+    void chavesQueOFilesystemNormalizariaParaOutroArquivoSaoRejeitadas() {
+        for (String key : new String[] {"a/../b", "a//b", "a/", "a/./b", "ponto.", "espaco "}) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> storage.put(key, new byte[0], PutOptions.of("text/plain")), key);
+        }
+    }
+
+    @Test
+    void symlinkParaForaDoRootNaoEhLido(@TempDir Path outside) throws IOException {
+        Path secret = Files.writeString(outside.resolve("segredo.txt"), "segredo", StandardCharsets.UTF_8);
+        try {
+            Files.createSymbolicLink(root.resolve("link.txt"), secret);
+        } catch (IOException | UnsupportedOperationException e) {
+            assumeTrue(false, "sem permissão para criar symlink: " + e);
+        }
+
+        assertThrows(IllegalArgumentException.class, () -> storage.open("link.txt"));
+        assertThrows(IllegalArgumentException.class, () -> storage.head("link.txt"));
+    }
+
+    @Test
+    void openDeUmaPastaEhObjetoInexistente() throws IOException {
+        Files.createDirectories(root.resolve("pasta"));
+
+        assertThrows(ObjectNotFoundException.class, () -> storage.open("pasta"));
+        assertTrue(storage.head("pasta").isEmpty());
+    }
+
+    @Test
+    void deleteRemovePastasQueFicaramVaziasENaoApagaPasta() {
+        storage.put("a/b/c.txt", new byte[1], PutOptions.of("text/plain"));
+        storage.put("x/fica.txt", new byte[1], PutOptions.of("text/plain"));
+        storage.put("x/sai.txt", new byte[1], PutOptions.of("text/plain"));
+
+        storage.delete("a/b/c.txt");
+        storage.delete("x/sai.txt");
+        storage.delete("x");   // uma pasta não é objeto: idempotente, não apaga nada
+
+        assertFalse(Files.exists(root.resolve("a")));
+        assertTrue(Files.exists(root.resolve("x/fica.txt")));
+        assertDoesNotThrow(() -> storage.put("a", new byte[1], PutOptions.of("text/plain")));
+    }
+
+    @Test
+    void completeQueFalhaMantemAsPartesParaNovaTentativa() {
+        var session = storage.initiateMultipart("m.bin", ObjectMetadata.empty());
+        var part = session.uploadPart(1, new byte[1], 1);
+
+        assertThrows(StorageException.class,
+                () -> session.complete(List.of(part, new com.example.storage.UploadedPart(2, "part-2", null))));
+
+        assertEquals(List.of(1),
+                session.listParts().stream().map(com.example.storage.UploadedPart::partNumber).toList());
+        session.abort();
     }
 
     @Test
