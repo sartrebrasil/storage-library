@@ -30,6 +30,11 @@ public record ByteRange(long offset, long length) {
         if (offset == SUFFIX && length == -1) {
             throw new IllegalArgumentException("sufixo precisa de length > 0");
         }
+        if (offset > 0 && length > Long.MAX_VALUE - offset) {
+            // Fim além de Long.MAX_VALUE (ex.: "bytes=5-9223372036854775807"): corta no maior fim
+            // representável, para offset + length não estourar em lastByte() e resolve().
+            length = Long.MAX_VALUE - offset;
+        }
     }
 
     public static ByteRange all() {
