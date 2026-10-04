@@ -1,6 +1,6 @@
 # Plano: correções do code review completo
 
-- **Status:** ativo; R0 e R1 concluídas; próxima: R2
+- **Status:** ativo; R0, R1 e R2 concluídas; próximas: R3 e R4
 - **Criado em:** 03/10/2026
 - **Origem:** code review completo dos 11 módulos (commit `f0884ec`). Itens marcados com ✔ foram
   confirmados no código ou nos fontes dos SDKs em `~/.m2` (AWS 2.55, GCS 2.74, Azure Blob 12.35,
@@ -29,7 +29,7 @@ reduzir a duplicação entre adapters e fechar as lacunas de teste que deixaram 
 |---|---|---|---|---|
 | R0 | Críticos: perda de dados e recursos quebrados | C1–C6 | — | Concluída |
 | R1 | Core e contrato de exceções | A1–A3 | — | Concluída |
-| R2 | Integridade em filesystem e SFTP | A5–A8, M7–M9 | R1 (A1) | Pendente |
+| R2 | Integridade em filesystem e SFTP | A5–A8, M7–M9 | R1 (A1) | Concluída |
 | R3 | Adapters de nuvem | A4, A10, A11, M3–M6 | R1 (A3) | Pendente |
 | R4 | SFTP operacional | A9, M10 | R2 | Pendente |
 | R5 | Spring: robustez e observabilidade | M1, M2, B-Spring | R0 (C2, C3) | Pendente |
@@ -145,3 +145,13 @@ reduzir a duplicação entre adapters e fechar as lacunas de teste que deixaram 
   A2: a validação saiu do construtor de `ObjectMetadata` para `requireWritable()`, chamado por `PutOptions`
   e pelo `initiateMultipart` de cada adapter; teste de contrato garante a falha antes do envio. A3: as
   sessões multipart de S3, GCS, Azure e OCI usam o `translate` do adapter.
+- **04/10/2026 — R2 concluída.** Nos dois adapters, dados e sidecar passam por um único `publish`
+  (temporário dos dados, sidecar num temporário, renomeação dos dados e depois do sidecar), usado por
+  `put`, `copy` e `complete`. O sidecar guarda tamanho e data de modificação do arquivo e é ignorado
+  quando não bate; sidecars antigos, sem esses campos, valem como estão. No SFTP a granularidade da data
+  é de 1 segundo: um arquivo trocado por fora com o mesmo tamanho no mesmo segundo não é detectado.
+  M7 não tem teste rodando no Windows (o teste é só POSIX). M9 não tem teste: exigiria provocar uma
+  falha de rename sem o destino existir. A falha intermitente de
+  `SftpContractTest.multipartMontaOObjetoCompleto` era um bug: partes em paralelo criando o mesmo
+  `.uploads/<id>` disputavam o `SFTPClient.mkdirs`. Corrigido com criação componente a componente e
+  um teste de contrato que a reproduzia.
