@@ -6,10 +6,15 @@ import java.util.regex.Pattern;
 /**
  * Propriedades gravadas junto com o objeto.
  *
- * <p>As chaves de {@code userMetadata} são restritas a {@code [a-z_][a-z0-9_]*} e os
+ * <p>Na escrita, as chaves de {@code userMetadata} são restritas a {@code [a-z_][a-z0-9_]*} e os
  * valores a ASCII imprimível: é o que os quatro provedores aceitam sem transformar
  * (o Azure exige identificadores C#, o S3 converte para minúsculas, a OCI prefixa).
- * Validar aqui faz o erro aparecer na criação, não no upload.</p>
+ * {@link #requireWritable()} valida, e {@link PutOptions} e {@link ObjectStorage#initiateMultipart}
+ * o chamam, então o erro aparece antes de qualquer envio.</p>
+ *
+ * <p>A construção não valida: {@link ObjectStorage#head} devolve a metadata como o provedor a guarda,
+ * inclusive a gravada por outras ferramentas ({@code goog-reserved-file-mtime}, {@code s3cmd-attrs},
+ * maiúsculas no Azure). Regravá-la falha em {@link #requireWritable()}.</p>
  */
 public record ObjectMetadata(String contentType,
                              String contentDisposition,
@@ -21,6 +26,15 @@ public record ObjectMetadata(String contentType,
 
     public ObjectMetadata {
         userMetadata = userMetadata == null ? Map.of() : Map.copyOf(userMetadata);
+    }
+
+    /**
+     * Confirma que esta metadata pode ser gravada em qualquer provedor.
+     *
+     * @return esta metadata
+     * @throws IllegalArgumentException chave fora de {@code [a-z_][a-z0-9_]*} ou valor fora de ASCII imprimível
+     */
+    public ObjectMetadata requireWritable() {
         userMetadata.forEach((key, value) -> {
             if (!KEY.matcher(key).matches()) {
                 throw new IllegalArgumentException("Chave de metadata inválida: '" + key
@@ -30,6 +44,7 @@ public record ObjectMetadata(String contentType,
                 throw new IllegalArgumentException("Valor de metadata não-ASCII na chave '" + key + "'");
             }
         });
+        return this;
     }
 
     public static ObjectMetadata of(String contentType) {

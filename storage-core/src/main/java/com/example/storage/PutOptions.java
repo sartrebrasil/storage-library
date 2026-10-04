@@ -6,7 +6,7 @@ import java.util.Objects;
 public record PutOptions(ObjectMetadata metadata, Condition condition) {
 
     public PutOptions {
-        Objects.requireNonNull(metadata, "metadata");
+        Objects.requireNonNull(metadata, "metadata").requireWritable();
         Objects.requireNonNull(condition, "condition");
     }
 

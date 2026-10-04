@@ -346,6 +346,15 @@ public abstract class ObjectStorageContract {
     }
 
     @Test
+    void metadataForaDasRegrasFalhaAntesDeGravar() {
+        ObjectMetadata invalid = new ObjectMetadata("text/plain", null, Map.of("Tenant-Id", "t1"));
+
+        assertThrows(IllegalArgumentException.class, () -> storage().initiateMultipart(key("invalida"), invalid));
+        assertThrows(IllegalArgumentException.class, () -> PutOptions.of(invalid));
+        assertTrue(storage().head(key("invalida")).isEmpty());
+    }
+
+    @Test
     void copyPreservaConteudoEMetadata() {
         String source = key("origem.txt");
         String target = key("destino.txt");

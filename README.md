@@ -83,7 +83,9 @@ Exceções: `ObjectNotFoundException`, `PreconditionFailedException`,
 subclasses de `StorageException`.
 
 Chaves de metadata do usuário: só `[a-z_][a-z0-9_]*` e valores ASCII, o que os
-quatro provedores aceitam sem transformar.
+quatro provedores aceitam sem transformar. A regra vale na escrita (`PutOptions`,
+`initiateMultipart`); `head` devolve a metadata como o provedor a guarda, inclusive a gravada
+por outras ferramentas, e regravá-la fora da regra falha com `IllegalArgumentException`.
 
 ### Diferenças por provedor
 
