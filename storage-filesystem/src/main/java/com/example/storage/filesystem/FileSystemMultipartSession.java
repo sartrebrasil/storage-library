@@ -25,8 +25,11 @@ final class FileSystemMultipartSession implements MultipartSession {
     private final String key;
     private final String uploadId;
     private final ObjectMetadata metadata;
+    private final Object writeLock;
 
-    FileSystemMultipartSession(Path targetPath, Path uploadDir, String key, ObjectMetadata metadata) {
+    FileSystemMultipartSession(Path targetPath, Path uploadDir, String key, ObjectMetadata metadata,
+                               Object writeLock) {
+        this.writeLock = writeLock;
         this.targetPath = targetPath;
         this.uploadDir = uploadDir;
         this.key = key;
@@ -72,13 +75,15 @@ final class FileSystemMultipartSession implements MultipartSession {
                     Files.copy(partPath(part.partNumber()), out);
                 }
             }
-            FileSystemObjectStorage.publish(temp, targetPath, metadata);
+            synchronized (writeLock) {
+                FileSystemObjectStorage.publish(temp, targetPath, metadata);
+            }
         } catch (IOException e) {
             deleteQuietly(temp);
+            // As partes ficam: o complete pode ser repetido, e o abort as apaga.
             throw new StorageException("Falha ao concluir upload de " + key, e);
-        } finally {
-            deleteUploadDir();
         }
+        deleteUploadDir();
     }
 
     @Override

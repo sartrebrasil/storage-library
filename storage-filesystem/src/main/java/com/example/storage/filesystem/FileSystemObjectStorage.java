@@ -1,5 +1,6 @@
 package com.example.storage.filesystem;
 
+import com.example.storage.AccessDeniedException;
 import com.example.storage.ByteRange;
 import com.example.storage.Condition;
 import com.example.storage.MultipartSession;
@@ -20,6 +21,7 @@ import java.io.OutputStream;
 import java.io.UncheckedIOException;
 import java.net.URI;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
@@ -57,9 +59,15 @@ import java.util.stream.Stream;
  * arquivos em {@link MultipartSession#complete}, sem manter nenhuma parte inteira em memória
  * (ver {@link FileSystemMultipartSession}).</p>
  *
- * <p>Escrita condicional é local ao processo: {@code put} sincroniza no próprio storage, então
- * duas instâncias de {@link FileSystemObjectStorage} (ou dois processos) sobre o mesmo diretório
- * não enxergam a escrita uma da outra antes de terminar.</p>
+ * <p>Escrita condicional é local ao processo: {@code put}, {@code copy} e o {@code complete} do
+ * multipart publicam sob o mesmo lock da instância, então duas instâncias de
+ * {@link FileSystemObjectStorage} (ou dois processos) sobre o mesmo diretório não enxergam a escrita
+ * uma da outra antes de terminar.</p>
+ *
+ * <p>Chaves que o filesystem normalizaria para outro arquivo ({@code a/../b}, {@code a//b},
+ * {@code a/}, segmento terminado em ponto ou espaço, que o Windows descarta) são rejeitadas. Uma
+ * leitura que resolva, por symlink, para fora do root falha com {@link IllegalArgumentException}.
+ * Pastas que ficam vazias depois de um {@code delete} são removidas.</p>
  */
 public final class FileSystemObjectStorage implements ObjectStorage {
 
@@ -68,6 +76,9 @@ public final class FileSystemObjectStorage implements ObjectStorage {
     static final String UPLOADS_DIR = ".uploads";
 
     private final Path root;
+    // ponytail: lock único por instância (não por chave); escritas em objetos diferentes
+    // esperam uma pela outra. Trocar por lock por chave se o throughput de escrita doer.
+    private final Object writeLock = new Object();
 
     public FileSystemObjectStorage(Path root) {
         this.root = Objects.requireNonNull(root, "root").normalize();
@@ -76,9 +87,7 @@ public final class FileSystemObjectStorage implements ObjectStorage {
     @Override
     public String put(String key, InputStream data, long length, PutOptions options) {
         Path path = resolve(key);
-        // ponytail: lock único por instância (não por chave); escritas em objetos diferentes
-        // esperam uma pela outra. Trocar por lock por chave se o throughput de put() doer.
-        synchronized (this) {
+        synchronized (writeLock) {
             checkCondition(path, options.condition());
             return writeData(path, data, length, options.metadata());
         }
@@ -90,7 +99,7 @@ public final class FileSystemObjectStorage implements ObjectStorage {
         Path target = resolve(key);
         String uploadId = UUID.randomUUID().toString();
         Path uploadDir = root.resolve(UPLOADS_DIR).resolve(uploadId);
-        return new FileSystemMultipartSession(target, uploadDir, key, metadata);
+        return new FileSystemMultipartSession(target, uploadDir, key, metadata, writeLock);
     }
 
     @Override
@@ -99,23 +108,26 @@ public final class FileSystemObjectStorage implements ObjectStorage {
         if (!Files.isRegularFile(path)) {
             return Optional.empty();
         }
+        requireInsideRoot(path, key);
         try {
             return Optional.of(readInfo(key, path));
         } catch (IOException e) {
-            throw new StorageException("Falha ao consultar " + key, e);
+            throw translate(e, "Falha ao consultar " + key);
         }
     }
 
     @Override
     public InputStream open(String key, ByteRange range) {
         Path path = resolve(key);
+        if (!Files.isRegularFile(path)) {   // uma pasta também não é objeto
+            throw new ObjectNotFoundException("Objeto não encontrado: " + key, null);
+        }
+        requireInsideRoot(path, key);
         long size;
         try {
             size = Files.size(path);
-        } catch (NoSuchFileException e) {
-            throw new ObjectNotFoundException("Objeto não encontrado: " + key, e);
         } catch (IOException e) {
-            throw new StorageException("Falha ao abrir " + key, e);
+            throw translate(e, "Falha ao abrir " + key);
         }
         ByteRange resolved = range.resolve(size);
         try {
@@ -131,7 +143,7 @@ public final class FileSystemObjectStorage implements ObjectStorage {
             }
             return StorageStreams.bounded(in, resolved.length());
         } catch (IOException e) {
-            throw new StorageException("Falha ao abrir " + key, e);
+            throw translate(e, "Falha ao abrir " + key);
         }
     }
 
@@ -151,10 +163,13 @@ public final class FileSystemObjectStorage implements ObjectStorage {
                     .filter(key -> key.startsWith(prefix))
                     .sorted()
                     .map(key -> summaryOf(key, root.resolve(key)))
+                    .filter(Objects::nonNull)
                     .toList()
                     .stream();
-        } catch (IOException | UncheckedIOException e) {
-            throw new StorageException("Falha ao listar " + prefix, e);
+        } catch (IOException e) {
+            throw translate(e, "Falha ao listar " + prefix);
+        } catch (UncheckedIOException e) {
+            throw translate(e.getCause(), "Falha ao listar " + prefix);
         }
     }
 
@@ -169,11 +184,15 @@ public final class FileSystemObjectStorage implements ObjectStorage {
     @Override
     public void delete(String key) {
         Path path = resolve(key);
+        if (!Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)) {
+            return;   // inexistente, ou uma pasta, que não é objeto: idempotente
+        }
         try {
             Files.deleteIfExists(path);
             Files.deleteIfExists(metaPath(path));
+            deleteEmptyParents(path.getParent());
         } catch (IOException e) {
-            throw new StorageException("Falha ao apagar " + key, e);
+            throw translate(e, "Falha ao apagar " + key);
         }
     }
 
@@ -184,19 +203,22 @@ public final class FileSystemObjectStorage implements ObjectStorage {
         if (!Files.isRegularFile(source)) {
             throw new ObjectNotFoundException("Origem da cópia não existe: " + sourceKey, null);
         }
+        requireInsideRoot(source, sourceKey);
         Path temp = null;
         try {
             ObjectMetadata metadata = metadataFrom(sidecarOf(source));
             Files.createDirectories(target.getParent());
             temp = newTempFile(target.getParent());
             Files.copy(source, temp, StandardCopyOption.REPLACE_EXISTING);
-            publish(temp, target, metadata);
+            synchronized (writeLock) {
+                publish(temp, target, metadata);
+            }
         } catch (NoSuchFileException e) {
             deleteQuietly(temp);
             throw new ObjectNotFoundException("Origem da cópia não existe: " + sourceKey, e);
         } catch (IOException e) {
             deleteQuietly(temp);
-            throw new StorageException("Falha ao copiar " + sourceKey + " para " + targetKey, e);
+            throw translate(e, "Falha ao copiar " + sourceKey + " para " + targetKey);
         }
     }
 
@@ -222,7 +244,12 @@ public final class FileSystemObjectStorage implements ObjectStorage {
         if (key.equals(UPLOADS_DIR) || key.startsWith(UPLOADS_DIR + "/")) {
             throw new IllegalArgumentException("Chave usa o prefixo reservado " + UPLOADS_DIR + ": " + key);
         }
-        for (String segment : key.split("/")) {
+        for (String segment : key.split("/", -1)) {
+            // Segmentos que a normalização tornaria outro arquivo (o Windows descarta ponto e espaço finais)
+            if (segment.isEmpty() || segment.equals(".") || segment.equals("..")
+                    || segment.endsWith(".") || segment.endsWith(" ")) {
+                throw new IllegalArgumentException("Chave inválida: " + key);
+            }
             if (segment.endsWith(META_SUFFIX) || segment.startsWith(TEMP_PREFIX)) {
                 throw new IllegalArgumentException("Chave usa um nome reservado (" + META_SUFFIX + " ou "
                         + TEMP_PREFIX + "): " + key);
@@ -233,6 +260,39 @@ public final class FileSystemObjectStorage implements ObjectStorage {
             throw new IllegalArgumentException("Chave tenta escapar do root (path traversal): " + key);
         }
         return resolved;
+    }
+
+    /** O caminho já existe: resolve symlinks e confere que ele continua dentro do root. */
+    private void requireInsideRoot(Path path, String key) {
+        try {
+            if (!path.toRealPath().startsWith(root.toRealPath())) {
+                throw new IllegalArgumentException("Chave aponta para fora do root (symlink): " + key);
+            }
+        } catch (IOException e) {
+            throw translate(e, "Falha ao consultar " + key);
+        }
+    }
+
+    /** Best-effort: para na primeira pasta que não está vazia (ou que outra escrita acabou de usar). */
+    private void deleteEmptyParents(Path dir) {
+        for (Path current = dir; current != null && current.startsWith(root) && !current.equals(root);
+             current = current.getParent()) {
+            try {
+                Files.delete(current);
+            } catch (IOException notEmptyOrGone) {
+                return;
+            }
+        }
+    }
+
+    private static StorageException translate(IOException e, String message) {
+        if (e instanceof NoSuchFileException) {
+            return new ObjectNotFoundException(message, e);
+        }
+        if (e instanceof java.nio.file.AccessDeniedException) {
+            return new AccessDeniedException(message, e);
+        }
+        return new StorageException(message, e);
     }
 
     private void checkCondition(Path path, Condition condition) {
@@ -253,7 +313,7 @@ public final class FileSystemObjectStorage implements ObjectStorage {
         } catch (NoSuchFileException e) {
             return null;
         } catch (IOException e) {
-            throw new StorageException("Falha ao ler versão atual de " + path, e);
+            throw translate(e, "Falha ao ler versão atual de " + path);
         }
     }
 
@@ -264,7 +324,7 @@ public final class FileSystemObjectStorage implements ObjectStorage {
             Files.createDirectories(parent);
             temp = newTempFile(parent);
         } catch (IOException e) {
-            throw new StorageException("Falha ao preparar escrita de " + path, e);
+            throw translate(e, "Falha ao preparar escrita de " + path);
         }
         try {
             long written;
@@ -278,7 +338,7 @@ public final class FileSystemObjectStorage implements ObjectStorage {
             return publish(temp, path, metadata);
         } catch (IOException e) {
             deleteQuietly(temp);
-            throw new StorageException("Falha ao gravar " + path, e);
+            throw translate(e, "Falha ao gravar " + path);
         } catch (RuntimeException e) {
             deleteQuietly(temp);
             throw e;
@@ -332,12 +392,15 @@ public final class FileSystemObjectStorage implements ObjectStorage {
                 metadataFrom(props));
     }
 
+    /** {@code null} se o arquivo foi apagado durante a listagem: ele só não aparece. */
     private ObjectSummary summaryOf(String key, Path dataPath) {
         try {
             BasicFileAttributes data = Files.readAttributes(dataPath, BasicFileAttributes.class);
             Instant lastModified = data.lastModifiedTime().toInstant();
             String version = versionOf(describing(loadMetadata(dataPath), data), lastModified.toEpochMilli());
             return new ObjectSummary(key, data.size(), version, lastModified);
+        } catch (NoSuchFileException e) {
+            return null;
         } catch (IOException e) {
             throw new UncheckedIOException("Falha ao listar " + key, e);
         }
