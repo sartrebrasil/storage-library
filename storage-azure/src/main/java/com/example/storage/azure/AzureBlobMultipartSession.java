@@ -3,6 +3,7 @@ package com.example.storage.azure;
 import com.azure.core.exception.AzureException;
 import com.azure.core.util.BinaryData;
 import com.azure.core.util.Context;
+import com.azure.storage.blob.models.BlobErrorCode;
 import com.azure.storage.blob.models.BlobHttpHeaders;
 import com.azure.storage.blob.models.BlobStorageException;
 import com.azure.storage.blob.models.Block;
@@ -83,6 +84,12 @@ final class AzureBlobMultipartSession implements MultipartSession {
                 .setMetadata(metadata.userMetadata());
         try {
             blob.commitBlockListWithResponse(options, null, Context.NONE);
+        } catch (BlobStorageException e) {
+            String message = "Falha ao concluir upload de " + key;
+            if (BlobErrorCode.INVALID_BLOCK_LIST.equals(e.getErrorCode())) {
+                message += " (blocos descartados: outro upload ou put no mesmo blob concluiu antes)";
+            }
+            throw AzureBlobObjectStorage.translate(e, message);
         } catch (AzureException e) {
             throw AzureBlobObjectStorage.translate(e, "Falha ao concluir upload de " + key);
         }
