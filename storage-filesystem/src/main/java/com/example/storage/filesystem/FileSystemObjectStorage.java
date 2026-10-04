@@ -21,6 +21,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.UncheckedIOException;
 import java.net.URI;
+import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.NoSuchFileException;
@@ -59,10 +60,11 @@ import java.util.stream.Stream;
  * arquivos em {@link MultipartSession#complete}, sem manter nenhuma parte inteira em memória
  * (ver {@link FileSystemMultipartSession}).</p>
  *
- * <p>Escrita condicional é local ao processo: {@code put}, {@code copy} e o {@code complete} do
- * multipart publicam sob o mesmo lock da instância, então duas instâncias de
- * {@link FileSystemObjectStorage} (ou dois processos) sobre o mesmo diretório não enxergam a escrita
- * uma da outra antes de terminar.</p>
+ * <p>{@code ifNotExists} é atômico no próprio filesystem: o arquivo entra no lugar por um hard link,
+ * que falha se o destino já existe, então vale também entre instâncias e processos sobre o mesmo
+ * diretório. {@code ifVersionMatches} é local ao processo: {@code put}, {@code copy} e o
+ * {@code complete} do multipart publicam sob o mesmo lock da instância, e outra instância (ou outro
+ * processo) não enxerga a escrita antes de ela terminar.</p>
  *
  * <p>Chaves que o filesystem normalizaria para outro arquivo ({@code a/../b}, {@code a//b},
  * {@code a/}, segmento terminado em ponto ou espaço, que o Windows descarta) são rejeitadas. Uma
@@ -87,7 +89,8 @@ public final class FileSystemObjectStorage implements ObjectStorage {
         Path path = resolve(key);
         synchronized (writeLock) {
             checkCondition(path, options.condition());
-            return writeData(path, data, length, options.metadata());
+            return writeData(path, data, length, options.metadata(),
+                    options.condition() instanceof Condition.IfNotExists);
         }
     }
 
@@ -209,7 +212,7 @@ public final class FileSystemObjectStorage implements ObjectStorage {
             temp = newTempFile(target.getParent());
             Files.copy(source, temp, StandardCopyOption.REPLACE_EXISTING);
             synchronized (writeLock) {
-                publish(temp, target, metadata);
+                publish(temp, target, metadata, false);
             }
         } catch (NoSuchFileException e) {
             deleteQuietly(temp);
@@ -298,7 +301,8 @@ public final class FileSystemObjectStorage implements ObjectStorage {
         }
     }
 
-    private String writeData(Path path, InputStream data, long length, ObjectMetadata metadata) {
+    private String writeData(Path path, InputStream data, long length, ObjectMetadata metadata,
+                             boolean failIfExists) {
         Path parent = path.getParent();
         Path temp;
         try {
@@ -316,7 +320,10 @@ public final class FileSystemObjectStorage implements ObjectStorage {
                 throw new StorageException("Tamanho informado (" + length + ") difere do conteúdo ("
                         + written + ") em " + path, null);
             }
-            return publish(temp, path, metadata);
+            return publish(temp, path, metadata, failIfExists);
+        } catch (FileAlreadyExistsException e) {
+            deleteQuietly(temp);
+            throw new PreconditionFailedException("Pré-condição ifNotExists falhou em " + path, e);
         } catch (IOException e) {
             deleteQuietly(temp);
             throw translate(e, "Falha ao gravar " + path);
@@ -332,20 +339,40 @@ public final class FileSystemObjectStorage implements ObjectStorage {
      * deixa um sidecar que não bate com o arquivo, e que por isso é ignorado. Chamado também por
      * {@link FileSystemMultipartSession#complete}.
      */
-    static String publish(Path temp, Path target, ObjectMetadata metadata) throws IOException {
+    static String publish(Path temp, Path target, ObjectMetadata metadata, boolean failIfExists) throws IOException {
         BasicFileAttributes data = Files.readAttributes(temp, BasicFileAttributes.class);
         String version = UUID.randomUUID().toString();
         Path metaTemp = newTempFile(target.getParent());
         try {
             Files.write(metaTemp, SidecarFiles.encode(metadata, version, data.size(),
                     data.lastModifiedTime().toMillis()));
-            Files.move(temp, target, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+            if (failIfExists) {
+                linkIfAbsent(temp, target);
+            } else {
+                Files.move(temp, target, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+            }
             Files.move(metaTemp, metaPath(target), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
         } catch (IOException | RuntimeException e) {
             deleteQuietly(metaTemp);
             throw e;
         }
         return version;
+    }
+
+    /**
+     * Põe {@code temp} em {@code target} só se ele não existir, de forma atômica no filesystem: um hard link
+     * falha com {@link FileAlreadyExistsException} se o destino existe ({@code rename} substituiria em
+     * silêncio no POSIX). Sem hard link (FAT, alguns compartilhamentos de rede), cai para um move que não
+     * substitui, protegido só pelo lock da instância.
+     */
+    private static void linkIfAbsent(Path temp, Path target) throws IOException {
+        try {
+            Files.createLink(target, temp);
+        } catch (UnsupportedOperationException e) {
+            Files.move(temp, target);
+            return;
+        }
+        Files.delete(temp);
     }
 
     /** {@code createFile}, não {@code createTempFile}: este cria só para o dono, e o objeto herdaria isso. */
