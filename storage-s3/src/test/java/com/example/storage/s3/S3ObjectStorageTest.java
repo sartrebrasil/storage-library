@@ -1,16 +1,22 @@
 package com.example.storage.s3;
 
 import com.example.storage.AccessDeniedException;
+import com.example.storage.ByteRange;
 import com.example.storage.MultipartSession;
 import com.example.storage.ObjectMetadata;
 import com.example.storage.ObjectNotFoundException;
+import com.example.storage.PreconditionFailedException;
 import com.example.storage.PutOptions;
 import com.example.storage.StorageException;
 import com.example.storage.UploadedPart;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import software.amazon.awssdk.awscore.exception.AwsErrorDetails;
+import software.amazon.awssdk.core.ResponseInputStream;
 import software.amazon.awssdk.core.sync.RequestBody;
+import software.amazon.awssdk.http.Abortable;
+import software.amazon.awssdk.http.AbortableInputStream;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.presigner.S3Presigner;
 import software.amazon.awssdk.services.s3.model.AbortMultipartUploadRequest;
@@ -20,6 +26,8 @@ import software.amazon.awssdk.services.s3.model.CompletedPart;
 import software.amazon.awssdk.services.s3.model.CreateMultipartUploadRequest;
 import software.amazon.awssdk.services.s3.model.CreateMultipartUploadResponse;
 import software.amazon.awssdk.services.s3.model.CopyObjectRequest;
+import software.amazon.awssdk.services.s3.model.GetObjectRequest;
+import software.amazon.awssdk.services.s3.model.GetObjectResponse;
 import software.amazon.awssdk.services.s3.model.HeadObjectRequest;
 import software.amazon.awssdk.services.s3.model.HeadObjectResponse;
 import software.amazon.awssdk.services.s3.model.UploadPartCopyRequest;
@@ -33,6 +41,7 @@ import software.amazon.awssdk.services.s3.model.UploadPartResponse;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.ByteArrayInputStream;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
@@ -239,6 +248,9 @@ class S3ObjectStorageTest {
         verify(s3, times(3)).uploadPartCopy(parts.capture());
         assertEquals(List.of("bytes=0-536870911", "bytes=536870912-1073741823", "bytes=1073741824-1288490187"),
                 parts.getAllValues().stream().map(UploadPartCopyRequest::copySourceRange).toList());
+        // Cada parte exige a mesma versão da origem: uma sobrescrita no meio falha em vez de misturar versões.
+        assertEquals(List.of("src", "src", "src"),
+                parts.getAllValues().stream().map(UploadPartCopyRequest::copySourceIfMatch).toList());
         ArgumentCaptor<CreateMultipartUploadRequest> create = ArgumentCaptor.forClass(CreateMultipartUploadRequest.class);
         verify(s3, atLeastOnce()).createMultipartUpload(create.capture());
         CreateMultipartUploadRequest target = create.getAllValues().getLast();
@@ -251,6 +263,68 @@ class S3ObjectStorageTest {
         assertEquals(List.of("p1", "p2", "p3"),
                 complete.getValue().multipartUpload().parts().stream().map(CompletedPart::eTag).toList());
         verify(s3, never()).copyObject(any(CopyObjectRequest.class));
+    }
+
+    @SuppressWarnings("unchecked")
+    private S3ObjectStorage multipartCopyOf(long size) {
+        doCallRealMethod().when(s3).headObject(any(Consumer.class));
+        doCallRealMethod().when(s3).createMultipartUpload(any(Consumer.class));
+        doCallRealMethod().when(s3).uploadPartCopy(any(Consumer.class));
+        when(s3.headObject(any(HeadObjectRequest.class)))
+                .thenReturn(HeadObjectResponse.builder().contentLength(size).eTag("src").build());
+        when(s3.createMultipartUpload(any(CreateMultipartUploadRequest.class)))
+                .thenReturn(CreateMultipartUploadResponse.builder().uploadId("copy-1").build());
+        return new S3ObjectStorage(s3, mock(S3Presigner.class), "bucket", 1);
+    }
+
+    @Test
+    void copiaEmPartesDeObjetoEnormeNaoPassaDoLimiteDePartes() {
+        S3ObjectStorage storage = multipartCopyOf(5L * 1024 * 1024 * 1024 * 1024);   // 5 TiB, o máximo do S3
+        when(s3.uploadPartCopy(any(UploadPartCopyRequest.class))).thenReturn(UploadPartCopyResponse.builder()
+                .copyPartResult(r -> r.eTag("p")).build());
+
+        storage.copy("src", "dst");
+
+        verify(s3, times(10_000)).uploadPartCopy(any(UploadPartCopyRequest.class));
+    }
+
+    @Test
+    void falhaAoAbortarCopiaEmPartesNaoEscondeAFalhaOriginal() {
+        S3ObjectStorage storage = multipartCopyOf(2L * 1024 * 1024 * 1024);
+        when(s3.uploadPartCopy(any(UploadPartCopyRequest.class)))
+                .thenThrow(S3Exception.builder().statusCode(412).message("PreconditionFailed").build());
+        when(s3.abortMultipartUpload(any(AbortMultipartUploadRequest.class)))
+                .thenThrow(S3Exception.builder().statusCode(500).message("abort falhou").build());
+
+        PreconditionFailedException e = assertThrows(PreconditionFailedException.class, () -> storage.copy("src", "dst"));
+
+        assertEquals(1, e.getCause().getSuppressed().length);
+    }
+
+    @Test
+    void putCondicionalEmBucketInexistenteNaoViraPrecondicao() {
+        when(s3.putObject(any(PutObjectRequest.class), any(RequestBody.class))).thenThrow(S3Exception.builder()
+                .statusCode(404).awsErrorDetails(AwsErrorDetails.builder().errorCode("NoSuchBucket").build()).build());
+        S3ObjectStorage storage = new S3ObjectStorage(s3, mock(S3Presigner.class), "bucket");
+
+        StorageException e = assertThrows(StorageException.class, () -> storage.put("k", new byte[1],
+                PutOptions.of("text/plain").ifVersionMatches("\"e1\"")));
+
+        assertFalse(e instanceof PreconditionFailedException, e.toString());
+    }
+
+    @Test
+    void contentRangeMalformadoAbortaORespostaEViraStorageException() {
+        Abortable connection = mock(Abortable.class);
+        when(s3.getObject(any(GetObjectRequest.class))).thenReturn(new ResponseInputStream<>(
+                GetObjectResponse.builder().contentLength(5L).contentRange("bytes x-y/z").build(),
+                AbortableInputStream.create(new ByteArrayInputStream(new byte[5]), connection)));
+        S3ObjectStorage storage = new S3ObjectStorage(s3, mock(S3Presigner.class), "bucket");
+
+        StorageException e = assertThrows(StorageException.class, () -> storage.read("k", ByteRange.of(0, 5)));
+
+        assertEquals(StorageException.class, e.getClass());
+        verify(connection).abort();
     }
 
     @Test
