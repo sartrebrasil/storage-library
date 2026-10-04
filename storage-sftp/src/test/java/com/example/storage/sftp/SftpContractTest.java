@@ -3,6 +3,7 @@ package com.example.storage.sftp;
 import com.example.storage.MultipartSession;
 import com.example.storage.ObjectInfo;
 import com.example.storage.ObjectMetadata;
+import com.example.storage.ObjectNotFoundException;
 import com.example.storage.ObjectStorage;
 import com.example.storage.ObjectSummary;
 import com.example.storage.PreconditionFailedException;
@@ -41,6 +42,8 @@ import java.util.stream.IntStream;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -211,6 +214,54 @@ class SftpContractTest extends ObjectStorageContract {
 
         assertEquals(List.of(base + "/dentro/a.txt"),
                 storage.list(base + "/dentro/").map(ObjectSummary::key).toList());
+    }
+
+    @Test
+    void deleteRemovePastasQueFicaramVaziasENaoApagaPasta() throws IOException {
+        String base = "limpeza/" + UUID.randomUUID();
+        storage.put(base + "/a/b/c.txt", new byte[1], PutOptions.of("text/plain"));
+        storage.put(base + "/x/fica.txt", new byte[1], PutOptions.of("text/plain"));
+
+        storage.delete(base + "/a/b/c.txt");
+        storage.delete(base + "/x");   // uma pasta não é objeto: idempotente
+
+        try (SFTPClient sftp = sshClient.newSFTPClient()) {
+            assertNull(sftp.statExistence("/upload/" + base + "/a"));
+            assertNotNull(sftp.statExistence("/upload/" + base + "/x/fica.txt"));
+        }
+        assertDoesNotThrow(() -> storage.put(base + "/a", new byte[1], PutOptions.of("text/plain")));
+    }
+
+    @Test
+    void openDeUmaPastaEhObjetoInexistente() throws IOException {
+        String dir = "pasta/" + UUID.randomUUID();
+        try (SFTPClient sftp = sshClient.newSFTPClient()) {
+            SftpObjectStorage.mkdirs(sftp, "/upload/" + dir);
+        }
+
+        assertThrows(ObjectNotFoundException.class, () -> storage.open(dir));
+    }
+
+    @Test
+    void completeQueFalhaMantemAsPartesParaNovaTentativa() {
+        MultipartSession session = storage.initiateMultipart("retry/" + UUID.randomUUID(), ObjectMetadata.empty());
+        UploadedPart part = session.uploadPart(1, new byte[1], 1);
+
+        assertThrows(StorageException.class, () -> session.complete(List.of(part, new UploadedPart(2, "part-2", null))));
+
+        assertEquals(List.of(1), session.listParts().stream().map(UploadedPart::partNumber).toList());
+        session.abort();
+    }
+
+    @Test
+    void rootNaRaizDoServidorGeraAsChavesCertas() {
+        SftpObjectStorage atRoot = new SftpObjectStorage(sshClient, "/");
+        String key = "upload/raiz-" + UUID.randomUUID() + "/a.txt";
+        atRoot.put(key, "a".getBytes(StandardCharsets.UTF_8), PutOptions.of("text/plain"));
+
+        assertEquals(List.of(key), atRoot.list(key.substring(0, key.lastIndexOf('/') + 1))
+                .map(ObjectSummary::key).toList());
+        assertTrue(atRoot.head(key).isPresent());
     }
 
     private static SSHClient connect() throws IOException {
