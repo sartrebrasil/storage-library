@@ -109,8 +109,8 @@ public final class OciObjectStorage implements ObjectStorage {
                 .putObjectBody(data)
                 .contentType(metadata.contentType())
                 .contentDisposition(metadata.contentDisposition())
-                // O SDK envia as chaves como estão: o prefixo é responsabilidade de quem chama.
-                .opcMeta(prefixed(metadata.userMetadata()));
+                // Sem prefixo: o ObjectMetadataInterceptor do SDK acrescenta "opc-meta-" a cada chave.
+                .opcMeta(metadata.userMetadata());
         switch (options.condition()) {
             case Condition.None none -> { }
             case Condition.IfNotExists ifNotExists -> request.ifNoneMatch("*");
@@ -132,7 +132,7 @@ public final class OciObjectStorage implements ObjectStorage {
                 .object(key)
                 .contentType(metadata.contentType())
                 .contentDisposition(metadata.contentDisposition())
-                .metadata(prefixed(metadata.userMetadata()))
+                .metadata(metadata.userMetadata())
                 .build();
         try {
             String uploadId = client.createMultipartUpload(CreateMultipartUploadRequest.builder()
@@ -397,14 +397,10 @@ public final class OciObjectStorage implements ObjectStorage {
         return StorageException.fromHttpStatus(e.getStatusCode(), message, e);
     }
 
-    /** A OCI exige o prefixo "opc-meta-" nas chaves de metadata do usuário. */
-    private static Map<String, String> prefixed(Map<String, String> userMetadata) {
-        Map<String, String> result = new HashMap<>();
-        userMetadata.forEach((k, v) -> result.put(USER_METADATA_PREFIX + k, v));
-        return result;
-    }
-
-    /** O SDK devolve as chaves com o prefixo "opc-meta-". */
+    /**
+     * O SDK já tira o "opc-meta-" das chaves; sobra outro nos objetos gravados por versões anteriores
+     * deste adapter, que prefixavam antes do SDK (a chave guardada ficou "opc-meta-opc-meta-...").
+     */
     private static Map<String, String> unprefixed(Map<String, String> opcMeta) {
         Map<String, String> result = new HashMap<>();
         if (opcMeta != null) {
