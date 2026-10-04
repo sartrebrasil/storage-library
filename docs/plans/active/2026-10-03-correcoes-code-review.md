@@ -1,6 +1,6 @@
 # Plano: correções do code review completo
 
-- **Status:** ativo; R0 a R6 concluídas; próximas: R7 e R8
+- **Status:** ativo; R0 a R7 concluídas; próxima: R8
 - **Criado em:** 03/10/2026
 - **Origem:** code review completo dos 11 módulos (commit `f0884ec`). Itens marcados com ✔ foram
   confirmados no código ou nos fontes dos SDKs em `~/.m2` (AWS 2.55, GCS 2.74, Azure Blob 12.35,
@@ -34,7 +34,7 @@ reduzir a duplicação entre adapters e fechar as lacunas de teste que deixaram 
 | R4 | SFTP operacional | A9, M10 | R2 | Concluída |
 | R5 | Spring: robustez e observabilidade | M1, M2, B-Spring | R0 (C2, C3) | Concluída |
 | R6 | Baixa severidade restante | B-* | R1–R5 | Concluída |
-| R7 | Refatoração: duplicação para o core | F1–F7 | R2, R3 | Pendente |
+| R7 | Refatoração: duplicação para o core | F1–F7 | R2, R3 | Concluída |
 | R8 | Lacunas de teste | T1–T4 | paralela a todas | Pendente |
 
 ## Andamento por item
@@ -77,7 +77,14 @@ reduzir a duplicação entre adapters e fechar as lacunas de teste que deixaram 
 | R6 GCS | Feito | `a94baea` |
 | R6 Azure | Feito | `5797b69` |
 | R6 OCI | Feito | `d0476dd` |
-| R7, R8 | Pendente | |
+| F1 | Feito: `SidecarFiles` no core (chave, sidecar, versão, metadata); `BoundedInputStream` já em R6 | `6d63885`, `aa45e27` |
+| F2 | Não feito: as cópias divergiram depois das R1–R6 (ver revisões) | |
+| F3 | Não feito: o contrato de `complete` aceita partes em qualquer ordem | |
+| F4 | Não feito: dois defaults mútuos entrariam em recursão | |
+| F5 | Feito | `d118e12` |
+| F6 | Não feito: a reflexão é menor que três switches e tolera SDKs antigos | |
+| F7 | Feito: `junit-bom`, `micrometer-observation`, imagens fixadas por digest; versão do BOM continua manual | `5f69499` |
+| R8 | Pendente | |
 
 ## R0 — Críticos
 
@@ -224,3 +231,13 @@ reduzir a duplicação entre adapters e fechar as lacunas de teste que deixaram 
   no filesystem, um arquivo apagado durante o `list` é ignorado, mas uma pasta apagada no meio do
   `Files.walk` ainda falha a listagem. O symlink só é conferido na leitura (`head`, `open`, origem do
   `copy`); escrever através de uma pasta que é symlink continua possível para quem tem escrita no root.
+- **04/10/2026 — R7 concluída, com itens descartados de propósito.** F2: a regra "IfVersionMatches + 404"
+  agora depende da checagem de bucket de cada provedor, o lote do `deleteAll` do GCS passou a usar
+  callbacks, e os cabeçalhos de presign têm nomes diferentes por provedor; MD5 em base64 e `closeQuietly`
+  são poucas linhas em dois lugares, e movê-los aumentaria a API pública do core sem ganho. F3: o
+  contrato de `MultipartSession.complete` aceita partes em qualquer ordem, então os adapters precisam
+  continuar ordenando. F4: `open` e `read` com default um no outro entrariam em recursão num adapter que
+  não sobrescrevesse nenhum. F6: o `checksumOf` por reflexão tem 10 linhas contra três switches de dez
+  casos, e não liga métodos que SDKs antigos não têm; o enum `Checksum` não foi enxugado para não remover
+  API pública. F1 tornou o SFTP mais estrito: segmentos terminados em ponto ou espaço são rejeitados,
+  como no filesystem.
