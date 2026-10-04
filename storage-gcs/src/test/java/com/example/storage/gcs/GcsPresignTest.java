@@ -79,6 +79,25 @@ class GcsPresignTest {
     }
 
     @Test
+    void credencialSemAssinaturaViraStorageExceptionComACausa() {
+        // ADC de usuário (gcloud auth application-default login) não assina: o SDK lança IllegalStateException.
+        Storage mocked = mock(Storage.class);
+        when(mocked.signUrl(any(), anyLong(), any(), any(Storage.SignUrlOption[].class)))
+                .thenThrow(new IllegalStateException("Signing key was not provided"));
+
+        StorageException e = assertThrows(StorageException.class,
+                () -> new GcsObjectStorage(mocked, mock(MultipartUploadClient.class), "b")
+                        .presignGet("k", Duration.ofMinutes(1)));
+        assertTrue(e.getMessage().contains("service account"), e.getMessage());
+    }
+
+    @Test
+    void presignPutComVersaoNaoNumericaFalhaAntesDeAssinar() {
+        assertThrows(IllegalArgumentException.class, () -> storage.presignPut("k", Duration.ofMinutes(1),
+                PutOptions.of("text/plain").ifVersionMatches("\"etag-de-outro-provedor\"")));
+    }
+
+    @Test
     void presignGetComNomeDeDownloadAssinaResponseContentDisposition() {
         URI url = storage.presignGet("reports/r-a1.csv", Duration.ofMinutes(15), "report-1.csv");
 
