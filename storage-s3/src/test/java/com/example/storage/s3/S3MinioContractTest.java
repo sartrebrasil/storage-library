@@ -23,8 +23,10 @@ class S3MinioContractTest extends ObjectStorageContract {
 
     private static final String BUCKET = "contract";
 
+    // MinIO RELEASE.2025-09-07T16-13-09Z, fixado por digest para o build não mudar sozinho; atualize de propósito.
     @Container
-    private static final GenericContainer<?> MINIO = new GenericContainer<>("minio/minio:latest")
+    private static final GenericContainer<?> MINIO = new GenericContainer<>(
+            "minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e")
             .withCommand("server", "/data")
             .withEnv("MINIO_ROOT_USER", "minioadmin")
             .withEnv("MINIO_ROOT_PASSWORD", "minioadmin")

@@ -51,8 +51,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 @Testcontainers(disabledWithoutDocker = true)
 class SftpContractTest extends ObjectStorageContract {
 
+    // atmoz/sftp sem tags de versão: fixado por digest para o build não mudar sozinho.
     @Container
-    private static final GenericContainer<?> SFTP = new GenericContainer<>("atmoz/sftp:latest")
+    private static final GenericContainer<?> SFTP = new GenericContainer<>("atmoz/sftp@sha256:0960390462a4441dbb63698d7c185b76a41ffcee7b78ff4adf275f3e66f9c475")
             .withCommand("user:pass:::upload")
             .withExposedPorts(22)
             .waitingFor(Wait.forListeningPort());
