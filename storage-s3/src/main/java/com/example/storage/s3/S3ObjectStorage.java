@@ -1,5 +1,6 @@
 package com.example.storage.s3;
 
+import com.example.storage.AccessDeniedException;
 import com.example.storage.ByteRange;
 import com.example.storage.CommonPrefix;
 import com.example.storage.ListEntry;
@@ -270,8 +271,9 @@ public final class S3ObjectStorage implements ObjectStorage {
                 DeleteObjectsResponse response = s3.deleteObjects(b -> b.bucket(bucket)
                         .delete(d -> d.objects(ids).quiet(true)));
                 for (S3Error error : response.errors()) {
-                    failures.put(error.key(), new StorageException(
-                            "Falha ao apagar " + uri(error.key()) + ": " + error.code() + " " + error.message(), null));
+                    String message = "Falha ao apagar " + uri(error.key()) + ": " + error.code() + " " + error.message();
+                    failures.put(error.key(), "AccessDenied".equals(error.code())
+                            ? new AccessDeniedException(message, null) : new StorageException(message, null));
                 }
             } catch (SdkException e) {
                 StorageException failure = translate(e, "Falha ao apagar lote em s3://" + bucket);
@@ -394,11 +396,11 @@ public final class S3ObjectStorage implements ObjectStorage {
         return "s3://" + bucket + "/" + key;
     }
 
-    private static int status(SdkException e) {
+    static int status(SdkException e) {
         return e instanceof S3Exception s3e ? s3e.statusCode() : -1;
     }
 
-    private static String errorCode(SdkException e) {
+    static String errorCode(SdkException e) {
         return e instanceof S3Exception s3e && s3e.awsErrorDetails() != null ? s3e.awsErrorDetails().errorCode() : null;
     }
 
