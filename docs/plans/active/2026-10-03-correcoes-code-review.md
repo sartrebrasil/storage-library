@@ -1,0 +1,134 @@
+# Plano: correções do code review completo
+
+- **Status:** ativo; nenhuma fase iniciada
+- **Criado em:** 03/10/2026
+- **Origem:** code review completo dos 11 módulos (commit `f0884ec`). Itens marcados com ✔ foram
+  confirmados no código ou nos fontes dos SDKs em `~/.m2` (AWS 2.55, GCS 2.74, Azure Blob 12.35,
+  OCI 3.97, Spring 6.2 / Boot 3.5, sshj 0.41). Os demais vêm da leitura do código e precisam de um
+  teste que reproduza a falha antes da correção.
+
+## Objetivo
+
+Eliminar os bugs de perda de dados, de contrato e de observabilidade encontrados no review, depois
+reduzir a duplicação entre adapters e fechar as lacunas de teste que deixaram esses bugs passar.
+
+## Regras que valem para todas as fases
+
+- Toda correção começa por um teste que falha (unitário ou no `ObjectStorageContract`, quando o
+  comportamento é portável).
+- Correção de comportamento portável vale para todos os adapters afetados na mesma fase.
+- API pública só muda de forma aditiva. Exceção: R8 (`ObjectMetadata` na leitura), que pode exigir
+  uma factory nova.
+- Uma fase termina com `mvn install` verde, incluindo os contratos em MinIO, Azurite e SFTP.
+- README e `docs/plan.md` são atualizados na mesma mudança que altera comportamento documentado.
+- Um PR por item crítico; itens pequenos da mesma fase e do mesmo módulo podem ir juntos.
+
+## Fases
+
+| Fase | Entrega | Itens | Depende de | Status |
+|---|---|---|---|---|
+| R0 | Críticos: perda de dados e recursos quebrados | C1–C6 | — | Pendente |
+| R1 | Core e contrato de exceções | A1–A3 | — | Pendente |
+| R2 | Integridade em filesystem e SFTP | A5–A8, M7–M9 | R1 (A1) | Pendente |
+| R3 | Adapters de nuvem | A4, A10, A11, M3–M6 | R1 (A3) | Pendente |
+| R4 | SFTP operacional | A9, M10 | R2 | Pendente |
+| R5 | Spring: robustez e observabilidade | M1, M2, B-Spring | R0 (C2, C3) | Pendente |
+| R6 | Baixa severidade restante | B-* | R1–R5 | Pendente |
+| R7 | Refatoração: duplicação para o core | F1–F7 | R2, R3 | Pendente |
+| R8 | Lacunas de teste | T1–T4 | paralela a todas | Pendente |
+
+## R0 — Críticos
+
+| ID | Módulo | Problema | Correção | Teste |
+|---|---|---|---|---|
+| C1 ✔ | sftp | `copy(k, k)` apaga o objeto: `copyRemoteFile` abre o destino com `TRUNC` antes de ler a origem (`SftpObjectStorage.java:316`). | Copiar para `.pending-*` e renomear (resolve também A6); no mínimo, retornar cedo quando `source.equals(target)`. | Contrato: `copySobreSiMesmoPreservaConteudo`. |
+| C2 ✔ | starter | Métricas/tracing inativos em app real: `after` não inclui `ObservationAutoConfiguration` (ordem alfabética faz `@ConditionalOnBean` falhar) e o BeanPostProcessor injeta o `ObservationRegistry` antes dos handlers (`StorageMetricsAutoConfiguration.java:20,30`). | `after` com `ObservationAutoConfiguration` por nome; `ObjectProvider<ObservationRegistry>` resolvido dentro de `postProcessAfterInitialization`. | Teste com `ObservationAutoConfiguration`, `MetricsAutoConfiguration` e `SimpleMetricsExportAutoConfiguration` reais, sem registry do usuário. |
+| C3 ✔ | starter | `ObjectStorageMetrics` não repassa `read`, `listDirectory` e `deleteAll`: os defaults substituem as versões nativas (HEAD + GET, scan completo, N deletes). | Overrides observados dos três; `read` observa até o `ObjectContent` fechar. Corrigir o javadoc. | Teste por método verificando que o delegate recebe a chamada. |
+| C4 ✔ | gcs | `deleteAll` trata erro por item (403/429/503) como sucesso: `storage.delete(List)` devolve `false` para erro e para inexistente (`GcsObjectStorage.java:229`). | `storage.batch()` com `BatchResult.Callback` por chave; só 404 conta como sucesso. | Unitário com falha de um item no lote. |
+| C5 ✔ | oci | Prefixo `opc-meta-` duplicado: o `ObjectMetadataInterceptor` do SDK já prefixa (`OciObjectStorage.java:113,135`). | Enviar `userMetadata` sem prefixo em `put` e `initiateMultipart`; manter o prefixo só nos cabeçalhos crus de `presignPut`; `unprefixed` continua tirando o prefixo extra dos objetos legados. Corrigir os mocks que afirmam o comportamento errado (`OciObjectStorageTest:58`, `OciOperationsTest:193,207`). | Unitário passando pelo interceptor real. |
+| C6 | spring-web | `ObjectContentResource extends InputStreamResource` faz o Spring reprocessar o `Range`: multi-faixa sai `206 multipart/byteranges` com `Content-Length` errado; malformado sai 416 com corpo inteiro (`ObjectResponses.java:76,118`). | Usar `new InputStreamResource(body)` e remover `ObjectContentResource`. | MockMvc: Range malformado, multi-faixa, `bytes=0-`. |
+
+## R1 — Core e contrato de exceções
+
+| ID | Módulo | Problema | Correção | Teste |
+|---|---|---|---|---|
+| A1 ✔ | core | Overflow em `ByteRange.resolve`: `bytes=5-9223372036854775807` num objeto de 100 bytes devolve faixa sem corte (reproduzido no jshell). Afeta GCS, Azure, FS, SFTP, InMemory e o `read` default. | `long end = toEnd() \|\| length >= size - offset ? size : offset + length;` | `CoreModelTest` e contrato com a faixa acima. |
+| A2 | todos | `head()` lança `IllegalArgumentException` com metadata gravada por outras ferramentas (`goog-reserved-file-mtime`, `s3cmd-attrs`, maiúsculas no Azure), porque o construtor de `ObjectMetadata` valida também na leitura. | Validar só na escrita: factory sem validação (ex.: `ObjectMetadata.fromProvider`) usada no `head` de todos os adapters. Decidir se chaves inválidas são mantidas ou descartadas. | Unitário por adapter com metadata estrangeira. |
+| A3 | todos | Os multipart sessions lançam `new StorageException(...)` em vez do `translate` do adapter: 403 nunca vira `AccessDeniedException` (S3, GCS, Azure, OCI). | Usar `translate` do adapter em `uploadPart`, `complete`, `abort` e `listParts`. | Unitário com 403 e 404 em `uploadPart` e `complete`. |
+
+## R2 — Integridade em filesystem e SFTP
+
+| ID | Problema | Correção |
+|---|---|---|
+| A5 | Dados e sidecar não são gravados de forma atômica, e o sidecar é sobrescrito no lugar. Leitura concorrente vê metadata vazia; um crash entre os passos deixa versão antiga com conteúdo novo e quebra `ifVersionMatches`. | Sidecar via temporário + rename atômico; gravar tamanho e mtime no sidecar e ignorá-lo quando não baterem com o arquivo. |
+| A6 | `copy` escreve direto no destino (FS:167, SF:316): leitores veem objeto pela metade. | Passar pelo mesmo caminho temporário + rename de `writeData`. |
+| A7 | Chaves reservadas aceitas: `put("a.txt.objmeta")` sobrescreve a metadata de `a.txt`; `.pending-*` some do `list`. | Rejeitar em `resolve` segmentos terminados em `META_SUFFIX` ou iniciados por `TEMP_PREFIX`. |
+| A8 | A versão do `ifVersionMatches` difere da de `head`/`list` para arquivo sem sidecar (`"v"+mtime`). No SFTP, sidecar órfão passa a condição sem o arquivo existir. | Uma função única `versionOf(props, mtime)`; no SFTP, exigir que o arquivo de dados exista. |
+| M7 | FS: `Files.createTempFile` grava com `rw-------`; o multipart respeita a umask. | `Files.createFile(parent.resolve(TEMP_PREFIX + UUID + ".tmp"))`. |
+| M8 | SFTP: `.pending-*` vaza quando o stream de entrada falha (SF:253-280). | `rmQuietly` em qualquer exceção. |
+| M9 | SFTP: com `ifNotExists`, qualquer falha no rename vira `PreconditionFailed` (SF:268). | Em falha, `stat` do destino; só é precondição se ele existir. |
+
+## R3 — Adapters de nuvem
+
+| ID | Módulo | Problema | Correção |
+|---|---|---|---|
+| A4 | azure | `copy`: timeout, interrupção e erro de polling escapam como `RuntimeException` crua; o flag de interrupção se perde e a cópia segue no servidor (`AzureBlobObjectStorage.java:232`). | Capturar `RuntimeException` em `waitForCompletion`, desembrulhar a causa (`AzureException` vira `translate`, `InterruptedException` reinterrompe), `abortCopyFromUrl` em timeout ou interrupção. |
+| A10 | s3 | Cópia multipart acima de 5 GiB sem `copySourceIfMatch`: origem sobrescrita no meio mistura versões (`S3ObjectStorage.java:353`). Também: parte fixa de 512 MiB passa de 10.000 partes acima de ~4,88 TiB; falha do abort substitui a exceção original; metadata além de content-type, disposition e user metadata se perde. | `copySourceIfMatch(source.version())`; `partSize = max(512 MiB, ceil(size / 10_000))`; abort com `addSuppressed`; documentar o que a cópia em partes preserva. |
+| A11 | gcs | `put` ignora `length` (stream maior grava extra, menor trunca) e aloca buffer de 15 MiB por chamada (`GcsObjectStorage.java:98`). | Limitar o stream a `length` e conferir a contagem; buffer `clamp(length, 256 KiB, 15 MiB)` ou `storage.create` com bytes para objetos pequenos. |
+| M3 | oci, s3, gcs | `head` com bucket inexistente devolve `Optional.empty()` (HEAD sem corpo, serviceCode `"Unknown"` no OCI); `copy` reporta `ObjectNotFoundException`. | No OCI, `headBucket` após 404 para distinguir; nos demais, documentar que `checkAccess` cobre o caso. |
+| M4 | todos | 404 com `ifVersionMatches` vira `PreconditionFailed` mesmo com bucket ou container inexistente. | Checar bucket ausente antes do atalho. |
+| M5 | azure | Multipart concorrente na mesma chave descarta os blocos do outro upload (`InvalidBlockList`). | Documentar no javadoc e na tabela do README; mensagem clara para `InvalidBlockList`. |
+| M6 | s3, oci | `read` vaza o stream e lança exceção não-`StorageException` com `Content-Range` malformado ou `contentLength` nulo. | Envolver o parse, abortar o stream e traduzir; no OCI reaproveitar `ObjectContent.fromHttp`. |
+
+## R4 — SFTP operacional
+
+| ID | Problema | Correção |
+|---|---|---|
+| A9 | Um canal por operação, sem limite: o 11º stream simultâneo falha com `MaxSessions 10` do OpenSSH. Sem keepalive nem reconexão. | Pool pequeno de `SFTPClient` (ou semáforo abaixo de `MaxSessions`), um cliente por `put`/`copy`, keepalive e reconexão sob lock quando `!isConnected()`. |
+| M10 | `checkAccess` sem override percorre a árvore inteira; o `list` do SFTP lê o sidecar de cada arquivo antes de filtrar o prefixo. | `checkAccess` com `stat(root)`; filtrar prefixo antes de `loadMetadata`; iniciar o walk no diretório mais profundo do prefixo. FS: `Files.isDirectory(root)`. |
+
+## R5 — Spring
+
+| ID | Problema | Correção |
+|---|---|---|
+| M1 | `ObjectResponses.java:67-77`: falha em `parseMediaType` depois do `read` vaza o stream e o permit do `StreamLimiter`. | Montar os cabeçalhos antes do `read`, ou try/catch que fecha o conteúdo e libera o permit. |
+| M2 | Observação de `list` só termina com o stream fechado ou consumido; `list(p).findFirst()` deixa o LongTaskTimer ativo para sempre. | Documentar que o stream de `list` deve ser fechado (javadoc do core) ou observar só a primeira página. |
+| B-Spring | `Error` registrado como `outcome=success`; `stopped` não atômico; spliterator mantém `SIZED`; `toString()` de `StorageProperties` expõe `secretKey`, `connectionString` e `password`; sem `ETag`/`If-Range` no `ObjectResponses`; Azure com `endpoint` sem `azure-identity` dá `NoClassDefFoundError`. | Capturar `Throwable`; `AtomicBoolean`; limpar `SIZED \| SUBSIZED`; mascarar segredos no `toString`; `ETag`, `Last-Modified` e `If-Range`; checar a classe com `ClassUtils.isPresent`. |
+
+## R6 — Baixa severidade restante
+
+- `BoundedInputStream.skip` ignora o limite da faixa (FS e SFTP).
+- `ObjectContent.fromHttp`: `NumberFormatException` não capturada e stream não fechado.
+- GCS: presign com credencial de usuário (ADC) lança `IllegalStateException`; `presignPut` não valida a generation.
+- S3: erros por chave de `deleteAll` sem tipo; `abort`/`listParts` dependem de `NoSuchUploadException` (usar status 404).
+- Azure: `abort()` não marca a sessão (`listParts` e `complete` continuam funcionando); `delete` com container inexistente passa em silêncio; `listParts` trata container ausente como lista vazia; leitura de sufixo pode lançar `PreconditionFailed`.
+- OCI: `region()` calculado a cada `copy` e lança `IllegalStateException` com endpoint customizado.
+- FS: chaves `a/../b`, `a//b` e `a/` normalizadas para outro objeto (usar a validação do SFTP); symlinks seguidos; lock cobre só `put`; `nio.AccessDeniedException` não mapeada; `open` em diretório não lança `ObjectNotFoundException`.
+- FS e SFTP: diretórios vazios nunca removidos (`put("a")` falha depois de `delete("a/b")`); `list` falha se um arquivo some durante o walk; `complete` apaga as partes mesmo quando falha; SFTP com `root="/"` gera chaves erradas.
+- Core: `DeleteResult` perde a ordem (`Map.copyOf`); README diz que o `deleteAll` default é paralelo, mas é sequencial.
+- InMemory: `complete` com parte inexistente ou após `abort` dá NPE; `put` lança `UncheckedIOException`.
+
+## R7 — Refatoração
+
+| ID | Entrega |
+|---|---|
+| F1 | Extrair para o core: `BoundedInputStream` (idêntica no FS e no SFTP), validação de chave, codec do sidecar com `versionOf`. |
+| F2 | Helpers de adapter no core: MD5 base64, regra "IfVersionMatches + 404", esqueleto de lote do `deleteAll`, `Condition` para cabeçalhos de presign, `closeQuietly`. |
+| F3 | Ordenar as partes em `MultipartOutputStream` antes de `complete`, removendo a ordenação dos quatro adapters. |
+| F4 | Avaliar inverter o default: `open(k, r) = read(k, r).stream()` aparece em quatro adapters. |
+| F5 | OCI `listDirectory`: trocar o `HashSet` de pastas vistas pela comparação com a última pasta (como o core). |
+| F6 | S3: `checksumOf` por switch em vez de reflexão; enxugar o enum `Checksum` (MD5, XXHASH*, SHA512 sem uso). |
+| F7 | Build: versão do BOM derivada do parent ou checada no release; `junit-bom`; `micrometer-core` em escopo de teste no starter; fixar a tag do Azurite. |
+
+## R8 — Lacunas de teste
+
+| ID | Entrega |
+|---|---|
+| T1 | `ObjectStorageContract`: chaves com espaço, unicode, `+` e `%`; `ifNotExists` concorrente; `copy` sobre si mesmo e sobrescrevendo destino; metadata estrangeira no `head`; `presignPut` com condição; range com overflow; limpeza dos objetos criados. |
+| T2 | Contrato opt-in contra bucket real para GCS e OCI, habilitado por variáveis de ambiente (os mocks esconderam C5 e M3). |
+| T3 | Spring: teste com a `ObservationAutoConfiguration` real; MockMvc do `ObjectResponses` (Range malformado, multi-faixa, HEAD, content-type inválido liberando o permit). |
+| T4 | Azure: `listCount` acima de 1000 no Azurite para exercitar paginação e deduplicação de pastas; testes de `copy` com FAILED, timeout e interrupção. |
+
+## Revisões
+
+Nenhuma ainda.
