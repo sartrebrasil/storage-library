@@ -1,6 +1,6 @@
 # Plano: correções do code review completo
 
-- **Status:** ativo; R0, R1 e R2 concluídas; próximas: R3 e R4
+- **Status:** ativo; R0 a R3 concluídas; próxima: R4
 - **Criado em:** 03/10/2026
 - **Origem:** code review completo dos 11 módulos (commit `f0884ec`). Itens marcados com ✔ foram
   confirmados no código ou nos fontes dos SDKs em `~/.m2` (AWS 2.55, GCS 2.74, Azure Blob 12.35,
@@ -30,7 +30,7 @@ reduzir a duplicação entre adapters e fechar as lacunas de teste que deixaram 
 | R0 | Críticos: perda de dados e recursos quebrados | C1–C6 | — | Concluída |
 | R1 | Core e contrato de exceções | A1–A3 | — | Concluída |
 | R2 | Integridade em filesystem e SFTP | A5–A8, M7–M9 | R1 (A1) | Concluída |
-| R3 | Adapters de nuvem | A4, A10, A11, M3–M6 | R1 (A3) | Pendente |
+| R3 | Adapters de nuvem | A4, A10, A11, M3–M6 | R1 (A3) | Concluída |
 | R4 | SFTP operacional | A9, M10 | R2 | Pendente |
 | R5 | Spring: robustez e observabilidade | M1, M2, B-Spring | R0 (C2, C3) | Pendente |
 | R6 | Baixa severidade restante | B-* | R1–R5 | Pendente |
@@ -155,3 +155,9 @@ reduzir a duplicação entre adapters e fechar as lacunas de teste que deixaram 
   `SftpContractTest.multipartMontaOObjetoCompleto` era um bug: partes em paralelo criando o mesmo
   `.uploads/<id>` disputavam o `SFTPClient.mkdirs`. Corrigido com criação componente a componente e
   um teste de contrato que a reproduzia.
+- **04/10/2026 — R3 concluída.** Uma branch por adapter. Desvios: M3 só mudou na OCI (um `head` de objeto
+  inexistente faz agora um HeadBucket a mais); no S3 e no GCS o caso fica coberto por `checkAccess`. M4
+  não foi aplicado ao GCS: `generationMatch` em objeto inexistente responde 412, então o 404 do `put`
+  condicional chega quase só de bucket inexistente, mas sem contrato GCS isso não foi verificado. A11
+  troca o `createFrom` sem buffer pelo com `bufferSize = min(length, 15 MiB)` e um stream que exige
+  exatamente `length` bytes.
