@@ -1,7 +1,6 @@
 package com.example.storage.oci;
 
 import com.example.storage.MultipartSession;
-import com.example.storage.StorageException;
 import com.example.storage.UploadedPart;
 import com.oracle.bmc.model.BmcException;
 import com.oracle.bmc.objectstorage.model.CommitMultipartUploadDetails;
@@ -69,7 +68,7 @@ final class OciMultipartSession implements MultipartSession {
             UploadPartResponse response = client.uploadPart(request);
             return new UploadedPart(partNumber, response.getETag(), md5);
         } catch (BmcException e) {
-            throw new StorageException("Falha ao enviar parte " + partNumber + " de " + key, e);
+            throw OciObjectStorage.translate(e, "Falha ao enviar parte " + partNumber + " de " + key);
         }
     }
 
@@ -93,7 +92,7 @@ final class OciMultipartSession implements MultipartSession {
                             .build())
                     .build());
         } catch (BmcException e) {
-            throw new StorageException("Falha ao concluir upload de " + key, e);
+            throw OciObjectStorage.translate(e, "Falha ao concluir upload de " + key);
         }
     }
 
@@ -108,7 +107,7 @@ final class OciMultipartSession implements MultipartSession {
                     .build());
         } catch (BmcException e) {
             if (e.getStatusCode() != NOT_FOUND) {   // 404: já abortado/concluído (idempotente)
-                throw new StorageException("Falha ao abortar upload de " + key, e);
+                throw OciObjectStorage.translate(e, "Falha ao abortar upload de " + key);
             }
         }
     }
@@ -131,7 +130,7 @@ final class OciMultipartSession implements MultipartSession {
             if (e.getStatusCode() == NOT_FOUND) {
                 return List.of();   // concluído/abortado
             }
-            throw new StorageException("Falha ao listar partes do upload de " + key, e);
+            throw OciObjectStorage.translate(e, "Falha ao listar partes do upload de " + key);
         }
     }
 

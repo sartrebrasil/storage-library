@@ -4,9 +4,11 @@ import com.azure.core.exception.AzureException;
 import com.azure.core.util.Context;
 import com.azure.storage.blob.BlobClient;
 import com.azure.storage.blob.BlobContainerClient;
+import com.azure.storage.blob.models.BlobStorageException;
 import com.azure.storage.blob.options.BlockBlobCommitBlockListOptions;
 import com.azure.storage.blob.options.BlockBlobStageBlockOptions;
 import com.azure.storage.blob.specialized.BlockBlobClient;
+import com.example.storage.AccessDeniedException;
 import com.example.storage.MultipartSession;
 import com.example.storage.ObjectMetadata;
 import com.example.storage.StorageException;
@@ -109,5 +111,14 @@ class AzureBlobObjectStorageTest {
         when(blob.commitBlockListWithResponse(any(), any(), any())).thenThrow(new AzureException("boom"));
 
         assertThrows(StorageException.class, () -> session.complete(List.of(new UploadedPart(1, "b1", null))));
+    }
+
+    @Test
+    void falhaNoEnvioMantemOTipoDaExcecao() {
+        BlobStorageException forbidden = mock(BlobStorageException.class);
+        when(forbidden.getStatusCode()).thenReturn(403);
+        when(blob.stageBlockWithResponse(any(), any(), any(Context.class))).thenThrow(forbidden);
+
+        assertThrows(AccessDeniedException.class, () -> session.uploadPart(1, new byte[1], 1));
     }
 }
