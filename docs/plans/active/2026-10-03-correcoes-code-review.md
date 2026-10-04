@@ -1,6 +1,6 @@
 # Plano: correções do code review completo
 
-- **Status:** ativo; R0 a R7 concluídas; próxima: R8
+- **Status:** concluído; R0 a R8 feitas (itens descartados de propósito registrados nas revisões)
 - **Criado em:** 03/10/2026
 - **Origem:** code review completo dos 11 módulos (commit `f0884ec`). Itens marcados com ✔ foram
   confirmados no código ou nos fontes dos SDKs em `~/.m2` (AWS 2.55, GCS 2.74, Azure Blob 12.35,
@@ -35,7 +35,7 @@ reduzir a duplicação entre adapters e fechar as lacunas de teste que deixaram 
 | R5 | Spring: robustez e observabilidade | M1, M2, B-Spring | R0 (C2, C3) | Concluída |
 | R6 | Baixa severidade restante | B-* | R1–R5 | Concluída |
 | R7 | Refatoração: duplicação para o core | F1–F7 | R2, R3 | Concluída |
-| R8 | Lacunas de teste | T1–T4 | paralela a todas | Pendente |
+| R8 | Lacunas de teste | T1–T4 | paralela a todas | Concluída |
 
 ## Andamento por item
 
@@ -84,7 +84,11 @@ reduzir a duplicação entre adapters e fechar as lacunas de teste que deixaram 
 | F5 | Feito | `d118e12` |
 | F6 | Não feito: a reflexão é menor que três switches e tolera SDKs antigos | |
 | F7 | Feito: `junit-bom`, `micrometer-observation`, imagens fixadas por digest; versão do BOM continua manual | `5f69499` |
-| R8 | Pendente | |
+| T1 | Feito: chaves especiais, `ifNotExists` concorrente, `copy` sobre destino, `presignPut` condicional, limpeza; overflow já em A1 e metadata estrangeira em A2 | `3a7dbe7` |
+| Fora do plano | `ifNotExists` do filesystem atômico entre instâncias (hard link), achado pelo T1 | `06090b0` |
+| T2 | Feito: `GcsBucketContractTest` e `OciBucketContractTest`, opt-in por variável de ambiente; não executados aqui | `3a7dbe7` |
+| T3 | Feito em C2 (Actuator real) e M1 (content-type inválido); MockMvc não feito | `6d6d130`, `6a3df1c` |
+| T4 | Feito: cópia FAILED, timeout e interrupção (A4); paginação no Azurite não feita | `3a7dbe7`, `8001267` |
 
 ## R0 — Críticos
 
@@ -241,3 +245,12 @@ reduzir a duplicação entre adapters e fechar as lacunas de teste que deixaram 
   casos, e não liga métodos que SDKs antigos não têm; o enum `Checksum` não foi enxugado para não remover
   API pública. F1 tornou o SFTP mais estrito: segmentos terminados em ponto ou espaço são rejeitados,
   como no filesystem.
+- **04/10/2026 — R8 concluída.** O teste de `ifNotExists` concorrente achou uma corrida real no filesystem:
+  o contrato cria uma instância por chamada, como dois processos fariam, e 5 de 8 escritores gravaram.
+  Corrigido com hard link (`Files.createLink` falha se o destino existe), atômico também entre processos;
+  sem suporte a hard link, cai para o lock da instância. `copy` sobre si mesmo não entrou no contrato
+  porque o S3 recusa `CopyObject` de um objeto nele mesmo sem mudar a metadata. Não feitos: MockMvc do
+  `ObjectResponses` (exigiria `spring-webmvc`, `spring-test` e a API de Servlet como dependências de
+  teste; a classe do corpo já é fixada em teste), e paginação no Azurite (a página do Azure tem 5000
+  itens, e o adapter não expõe o tamanho da página). Os contratos de GCS e OCI contra bucket real só
+  compilam aqui; precisam de credenciais para rodar.
