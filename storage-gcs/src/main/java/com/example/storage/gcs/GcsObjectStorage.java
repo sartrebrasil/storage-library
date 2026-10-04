@@ -109,6 +109,7 @@ public final class GcsObjectStorage implements ObjectStorage {
 
     @Override
     public MultipartSession initiateMultipart(String key, ObjectMetadata metadata) {
+        metadata.requireWritable();
         CreateMultipartUploadRequest request = CreateMultipartUploadRequest.builder()
                 .bucket(bucket)
                 .key(key)

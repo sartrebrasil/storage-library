@@ -67,6 +67,7 @@ public final class InMemoryObjectStorage implements ObjectStorage {
 
     @Override
     public MultipartSession initiateMultipart(String key, ObjectMetadata metadata) {
+        metadata.requireWritable();
         String uploadId = UUID.randomUUID().toString();
         activeUploads.add(uploadId);
         return new Session(key, uploadId, metadata);

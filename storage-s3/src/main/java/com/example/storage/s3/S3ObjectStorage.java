@@ -142,6 +142,7 @@ public final class S3ObjectStorage implements ObjectStorage {
 
     @Override
     public MultipartSession initiateMultipart(String key, ObjectMetadata metadata) {
+        metadata.requireWritable();
         CreateMultipartUploadRequest.Builder request = CreateMultipartUploadRequest.builder()
                 .bucket(bucket)
                 .key(key)

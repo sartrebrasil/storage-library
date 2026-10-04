@@ -128,6 +128,7 @@ public final class OciObjectStorage implements ObjectStorage {
 
     @Override
     public MultipartSession initiateMultipart(String key, ObjectMetadata metadata) {
+        metadata.requireWritable();
         CreateMultipartUploadDetails details = CreateMultipartUploadDetails.builder()
                 .object(key)
                 .contentType(metadata.contentType())

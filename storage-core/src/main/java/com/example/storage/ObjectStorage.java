@@ -43,6 +43,8 @@ public interface ObjectStorage {
      * Inicia um upload em partes. O objeto só fica visível no storage
      * depois de {@link MultipartSession#complete}, então nunca existe
      * um objeto "pela metade" para quem for baixar.
+     *
+     * @throws IllegalArgumentException metadata fora das regras de escrita ({@link ObjectMetadata#requireWritable()})
      */
     MultipartSession initiateMultipart(String key, ObjectMetadata metadata);
 
