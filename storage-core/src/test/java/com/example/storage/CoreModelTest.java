@@ -71,6 +71,10 @@ class CoreModelTest {
         assertThrows(RangeNotSatisfiableException.class, () -> ByteRange.from(100).resolve(100));
         assertThrows(RangeNotSatisfiableException.class, () -> ByteRange.of(0, 1).resolve(0));
         assertThrows(RangeNotSatisfiableException.class, () -> ByteRange.suffix(1).resolve(0));
+        // Fim perto de Long.MAX_VALUE: offset + length não pode estourar e deixar a faixa sem corte.
+        assertEquals(ByteRange.of(5, 95), ByteRange.parseHttp("bytes=5-9223372036854775807").resolve(100));
+        assertEquals(ByteRange.of(1, 99), ByteRange.of(1, Long.MAX_VALUE).resolve(100));
+        assertEquals("bytes=1-9223372036854775806", ByteRange.of(1, Long.MAX_VALUE).httpValue());
     }
 
     @Test

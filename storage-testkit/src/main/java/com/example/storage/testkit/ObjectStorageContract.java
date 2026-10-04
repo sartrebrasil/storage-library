@@ -34,6 +34,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Random;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
@@ -189,6 +190,18 @@ public abstract class ObjectStorageContract {
             assertEquals(100, content.contentLength());
             assertTrue(content.contentRange().isEmpty());
             assertArrayEquals(data, content.stream().readAllBytes());
+        }
+    }
+
+    @Test
+    void readCortaFaixaQueTerminaPertoDoLimiteDoLong() throws IOException {
+        String key = key("faixa-enorme.txt");
+        storage().put(key, bytes("0123456789"), PutOptions.of("text/plain"));
+
+        try (ObjectContent content = storage().read(key, ByteRange.of(5, Long.MAX_VALUE))) {
+            assertEquals(5, content.contentLength());
+            assertEquals(Optional.of("bytes 5-9/10"), content.contentRange());
+            assertArrayEquals(bytes("56789"), content.stream().readAllBytes());
         }
     }
 
