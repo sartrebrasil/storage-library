@@ -474,20 +474,36 @@ public final class SftpObjectStorage implements ObjectStorage {
     }
 
     /**
-     * {@code SFTPClient.mkdirs} não é idempotente como {@code Files.createDirectories}: falha
-     * se algum segmento do caminho já existir. Chamado também por {@link SftpMultipartSession}.
+     * Cria {@code path} e os pais que faltarem, aceitando os que já existem. Componente a componente, e não
+     * {@code SFTPClient.mkdirs}: este checa e cria cada nível em passos separados, então duas partes de
+     * multipart enviadas em paralelo criando o mesmo {@code .uploads/<id>} fazem uma delas falhar.
+     * Chamado também por {@link SftpMultipartSession}.
      */
     static void mkdirs(SFTPClient sftp, String path) throws IOException {
-        try {
-            sftp.mkdirs(path);
-        } catch (SFTPException e) {
+        StringBuilder current = new StringBuilder();
+        for (String segment : path.split("/")) {
+            if (segment.isEmpty()) {
+                continue;
+            }
+            String dir = current.append('/').append(segment).toString();
             try {
-                if (sftp.stat(path).getType() != FileMode.Type.DIRECTORY) {
+                sftp.mkdir(dir);
+            } catch (SFTPException e) {
+                if (!isDirectory(sftp, dir)) {
                     throw e;
                 }
-            } catch (SFTPException stillMissing) {
-                throw e;
             }
+        }
+    }
+
+    private static boolean isDirectory(SFTPClient sftp, String path) throws IOException {
+        try {
+            return sftp.stat(path).getType() == FileMode.Type.DIRECTORY;
+        } catch (SFTPException e) {
+            if (isNotFound(e)) {
+                return false;
+            }
+            throw e;
         }
     }
 
