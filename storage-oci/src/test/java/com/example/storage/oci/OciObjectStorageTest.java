@@ -7,6 +7,7 @@ import com.example.storage.UploadedPart;
 import com.oracle.bmc.model.BmcException;
 import com.oracle.bmc.objectstorage.model.CommitMultipartUploadPartDetails;
 import com.oracle.bmc.objectstorage.model.MultipartUpload;
+import com.oracle.bmc.objectstorage.internal.http.ObjectMetadataInterceptor;
 import com.oracle.bmc.objectstorage.requests.AbortMultipartUploadRequest;
 import com.oracle.bmc.objectstorage.requests.CommitMultipartUploadRequest;
 import com.oracle.bmc.objectstorage.requests.CreateMultipartUploadRequest;
@@ -44,7 +45,7 @@ class OciObjectStorageTest {
     }
 
     @Test
-    void iniciaUploadComMetadataPrefixada() {
+    void iniciaUploadComMetadataSemPrefixoParaOSdkPrefixar() {
         ArgumentCaptor<CreateMultipartUploadRequest> captor = ArgumentCaptor.forClass(CreateMultipartUploadRequest.class);
         verify(client).createMultipartUpload(captor.capture());
         CreateMultipartUploadRequest request = captor.getValue();
@@ -55,8 +56,9 @@ class OciObjectStorageTest {
         assertEquals("text/csv", request.getCreateMultipartUploadDetails().getContentType());
         assertEquals("attachment; filename=\"r.csv\"",
                 request.getCreateMultipartUploadDetails().getContentDisposition());
+        assertEquals(Map.of("tenant", "t1", "origem", "job"), request.getCreateMultipartUploadDetails().getMetadata());
         assertEquals(Map.of("opc-meta-tenant", "t1", "opc-meta-origem", "job"),
-                request.getCreateMultipartUploadDetails().getMetadata());
+                ObjectMetadataInterceptor.intercept(request).getCreateMultipartUploadDetails().getMetadata());
     }
 
     @Test

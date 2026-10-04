@@ -20,6 +20,7 @@ import com.oracle.bmc.objectstorage.model.CreatePreauthenticatedRequestDetails;
 import com.oracle.bmc.objectstorage.model.ListObjects;
 import com.oracle.bmc.objectstorage.model.PreauthenticatedRequest;
 import com.oracle.bmc.objectstorage.model.WorkRequest;
+import com.oracle.bmc.objectstorage.internal.http.ObjectMetadataInterceptor;
 import com.oracle.bmc.objectstorage.requests.CopyObjectRequest;
 import com.oracle.bmc.objectstorage.requests.CreatePreauthenticatedRequestRequest;
 import com.oracle.bmc.objectstorage.requests.GetObjectRequest;
@@ -66,13 +67,18 @@ class OciOperationsTest {
                 .build());
     }
 
+    /** Como o SDK devolve: o interceptor já tirou o "opc-meta-" das chaves. */
     private static HeadObjectResponse headResponse() {
+        return headResponse(Map.of("tenant", "t1"));
+    }
+
+    private static HeadObjectResponse headResponse(Map<String, String> opcMeta) {
         return HeadObjectResponse.builder().contentLength(5L).eTag("e1").contentType("text/plain")
-                .lastModified(Date.from(NOW)).opcMeta(Map.of("opc-meta-tenant", "t1")).build();
+                .lastModified(Date.from(NOW)).opcMeta(opcMeta).build();
     }
 
     @Test
-    void putPrefixaMetadataEAplicaCondicao() {
+    void putEnviaMetadataSemPrefixoParaOSdkPrefixarEAplicaCondicao() {
         when(client.putObject(any())).thenReturn(PutObjectResponse.builder().eTag("e2").build());
         var options = PutOptions.of(new ObjectMetadata("text/plain", null, Map.of("tenant", "t1"))).ifNotExists();
 
@@ -82,7 +88,10 @@ class OciOperationsTest {
         verify(client).putObject(captor.capture());
         assertEquals("e2", version);
         assertEquals(5L, captor.getValue().getContentLength());
-        assertEquals(Map.of("opc-meta-tenant", "t1"), captor.getValue().getOpcMeta());
+        assertEquals(Map.of("tenant", "t1"), captor.getValue().getOpcMeta());
+        // O que vai para o fio: o interceptor do SDK acrescenta o prefixo uma única vez.
+        assertEquals(Map.of("opc-meta-tenant", "t1"),
+                ObjectMetadataInterceptor.intercept(captor.getValue()).getOpcMeta());
         assertEquals("*", captor.getValue().getIfNoneMatch());
     }
 
@@ -102,6 +111,14 @@ class OciOperationsTest {
 
         assertEquals(new ObjectInfo("k", 5, "e1", NOW, new ObjectMetadata("text/plain", null, Map.of("tenant", "t1"))),
                 info);
+    }
+
+    @Test
+    void headTiraOPrefixoQueSobrouDeObjetosGravadosComPrefixoDuplo() {
+        // Gravado por versões anteriores como "opc-meta-opc-meta-tenant"; o SDK tira só um prefixo.
+        when(client.headObject(any())).thenReturn(headResponse(Map.of("opc-meta-tenant", "t1")));
+
+        assertEquals(Map.of("tenant", "t1"), storage.head("k").orElseThrow().metadata().userMetadata());
     }
 
     @Test
