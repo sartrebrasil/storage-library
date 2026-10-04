@@ -12,6 +12,7 @@ import com.example.storage.ObjectSummary;
 import com.example.storage.PreconditionFailedException;
 import com.example.storage.PresignedRequest;
 import com.example.storage.PutOptions;
+import com.example.storage.SidecarFiles;
 import com.example.storage.StorageException;
 import com.example.storage.StorageStreams;
 
@@ -29,7 +30,6 @@ import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.time.Duration;
 import java.time.Instant;
-import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -71,9 +71,7 @@ import java.util.stream.Stream;
  */
 public final class FileSystemObjectStorage implements ObjectStorage {
 
-    private static final String META_SUFFIX = ".objmeta";
-    private static final String TEMP_PREFIX = ".pending-";
-    static final String UPLOADS_DIR = ".uploads";
+    static final String UPLOADS_DIR = SidecarFiles.UPLOADS_DIR;
 
     private final Path root;
     // ponytail: lock único por instância (não por chave); escritas em objetos diferentes
@@ -237,24 +235,7 @@ public final class FileSystemObjectStorage implements ObjectStorage {
     // ------------------------------------------------------------------
 
     private Path resolve(String key) {
-        Objects.requireNonNull(key, "key");
-        if (key.isEmpty() || key.startsWith("/") || key.contains("\\")) {
-            throw new IllegalArgumentException("Chave inválida: " + key);
-        }
-        if (key.equals(UPLOADS_DIR) || key.startsWith(UPLOADS_DIR + "/")) {
-            throw new IllegalArgumentException("Chave usa o prefixo reservado " + UPLOADS_DIR + ": " + key);
-        }
-        for (String segment : key.split("/", -1)) {
-            // Segmentos que a normalização tornaria outro arquivo (o Windows descarta ponto e espaço finais)
-            if (segment.isEmpty() || segment.equals(".") || segment.equals("..")
-                    || segment.endsWith(".") || segment.endsWith(" ")) {
-                throw new IllegalArgumentException("Chave inválida: " + key);
-            }
-            if (segment.endsWith(META_SUFFIX) || segment.startsWith(TEMP_PREFIX)) {
-                throw new IllegalArgumentException("Chave usa um nome reservado (" + META_SUFFIX + " ou "
-                        + TEMP_PREFIX + "): " + key);
-            }
-        }
+        SidecarFiles.requireValidKey(key);
         Path resolved = root.resolve(key).normalize();
         if (!resolved.startsWith(root)) {
             throw new IllegalArgumentException("Chave tenta escapar do root (path traversal): " + key);
@@ -356,7 +337,8 @@ public final class FileSystemObjectStorage implements ObjectStorage {
         String version = UUID.randomUUID().toString();
         Path metaTemp = newTempFile(target.getParent());
         try {
-            writeMetadataFile(metaTemp, metadata, version, data.size(), data.lastModifiedTime().toMillis());
+            Files.write(metaTemp, SidecarFiles.encode(metadata, version, data.size(),
+                    data.lastModifiedTime().toMillis()));
             Files.move(temp, target, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
             Files.move(metaTemp, metaPath(target), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
         } catch (IOException | RuntimeException e) {
@@ -368,7 +350,7 @@ public final class FileSystemObjectStorage implements ObjectStorage {
 
     /** {@code createFile}, não {@code createTempFile}: este cria só para o dono, e o objeto herdaria isso. */
     private static Path newTempFile(Path dir) throws IOException {
-        return Files.createFile(dir.resolve(TEMP_PREFIX + UUID.randomUUID()));
+        return Files.createFile(dir.resolve(SidecarFiles.TEMP_PREFIX + UUID.randomUUID()));
     }
 
     private boolean isDataFile(Path path) {
@@ -376,8 +358,7 @@ public final class FileSystemObjectStorage implements ObjectStorage {
         if (rel.getNameCount() > 0 && rel.getName(0).toString().equals(UPLOADS_DIR)) {
             return false;
         }
-        String name = path.getFileName().toString();
-        return !name.endsWith(META_SUFFIX) && !name.startsWith(TEMP_PREFIX);
+        return SidecarFiles.isDataFile(path.getFileName().toString());
     }
 
     private String toKey(Path path) {
@@ -406,36 +387,22 @@ public final class FileSystemObjectStorage implements ObjectStorage {
         }
     }
 
-    private static ObjectMetadata metadataFrom(Properties props) {
-        Map<String, String> userMetadata = new LinkedHashMap<>();
-        for (String name : props.stringPropertyNames()) {
-            if (name.startsWith("user.")) {
-                userMetadata.put(name.substring("user.".length()), props.getProperty(name));
-            }
-        }
-        return new ObjectMetadata(props.getProperty("contentType"), props.getProperty("contentDisposition"), userMetadata);
-    }
-
     /** O sidecar de {@code dataPath}, vazio se ele não existe ou não descreve mais o arquivo. */
     private static Properties sidecarOf(Path dataPath) throws IOException {
         return describing(loadMetadata(dataPath), Files.readAttributes(dataPath, BasicFileAttributes.class));
     }
 
-    /**
-     * {@code props} se ele descreve o arquivo (mesmo tamanho e data de modificação), senão vazio. Sidecars
-     * gravados antes de guardarem tamanho e data valem como estão.
-     */
+    /** No filesystem, a data de modificação do sidecar é em milissegundos. */
     private static Properties describing(Properties props, BasicFileAttributes data) {
-        String size = props.getProperty("size");
-        String mtime = props.getProperty("mtime");
-        boolean stale = (size != null && !size.equals(String.valueOf(data.size())))
-                || (mtime != null && !mtime.equals(String.valueOf(data.lastModifiedTime().toMillis())));
-        return stale ? new Properties() : props;
+        return SidecarFiles.describing(props, data.size(), data.lastModifiedTime().toMillis());
     }
 
-    /** A versão do sidecar ou, sem ele, uma derivada da data de modificação. */
     private static String versionOf(Properties sidecar, long lastModifiedMillis) {
-        return sidecar.getProperty("version", "v" + lastModifiedMillis);
+        return SidecarFiles.versionOf(sidecar, lastModifiedMillis);
+    }
+
+    private static ObjectMetadata metadataFrom(Properties sidecar) {
+        return SidecarFiles.metadataFrom(sidecar);
     }
 
     private static Properties loadMetadata(Path dataPath) throws IOException {
@@ -449,26 +416,8 @@ public final class FileSystemObjectStorage implements ObjectStorage {
         return props;
     }
 
-    private static void writeMetadataFile(Path file, ObjectMetadata metadata, String version, long size,
-                                          long lastModifiedMillis) throws IOException {
-        Properties props = new Properties();
-        props.setProperty("version", version);
-        props.setProperty("size", String.valueOf(size));
-        props.setProperty("mtime", String.valueOf(lastModifiedMillis));
-        if (metadata.contentType() != null) {
-            props.setProperty("contentType", metadata.contentType());
-        }
-        if (metadata.contentDisposition() != null) {
-            props.setProperty("contentDisposition", metadata.contentDisposition());
-        }
-        metadata.userMetadata().forEach((k, v) -> props.setProperty("user." + k, v));
-        try (OutputStream out = Files.newOutputStream(file)) {
-            props.store(out, null);
-        }
-    }
-
     private static Path metaPath(Path dataPath) {
-        return dataPath.resolveSibling(dataPath.getFileName().toString() + META_SUFFIX);
+        return dataPath.resolveSibling(dataPath.getFileName().toString() + SidecarFiles.META_SUFFIX);
     }
 
     private static void deleteQuietly(Path path) {
