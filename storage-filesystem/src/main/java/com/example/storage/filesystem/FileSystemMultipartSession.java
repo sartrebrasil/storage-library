@@ -10,11 +10,9 @@ import java.io.OutputStream;
 import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.util.Comparator;
 import java.util.List;
-import java.util.UUID;
 
 /**
  * Cada parte vira um arquivo em {@code .uploads/<uploadId>/part-<n>}; {@link #complete}
@@ -74,8 +72,7 @@ final class FileSystemMultipartSession implements MultipartSession {
                     Files.copy(partPath(part.partNumber()), out);
                 }
             }
-            Files.move(temp, targetPath, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
-            FileSystemObjectStorage.writeMetadataFile(targetPath, metadata, UUID.randomUUID().toString());
+            FileSystemObjectStorage.publish(temp, targetPath, metadata);
         } catch (IOException e) {
             deleteQuietly(temp);
             throw new StorageException("Falha ao concluir upload de " + key, e);

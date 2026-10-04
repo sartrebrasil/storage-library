@@ -1,7 +1,9 @@
 package com.example.storage.filesystem;
 
 import com.example.storage.ObjectInfo;
+import com.example.storage.ObjectMetadata;
 import com.example.storage.ObjectStorage;
+import com.example.storage.PreconditionFailedException;
 import com.example.storage.PutOptions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -12,9 +14,11 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 class FileSystemOperationsTest {
 
@@ -40,6 +44,66 @@ class FileSystemOperationsTest {
     void chaveNoPrefixoReservadoEhRejeitada() {
         assertThrows(IllegalArgumentException.class,
                 () -> storage.put(".uploads/x", new byte[0], PutOptions.of("text/plain")));
+    }
+
+    @Test
+    void chaveComNomeReservadoDoSidecarOuTemporarioEhRejeitada() {
+        assertThrows(IllegalArgumentException.class,
+                () -> storage.put("a.txt.objmeta", new byte[0], PutOptions.of("text/plain")));
+        assertThrows(IllegalArgumentException.class,
+                () -> storage.put("dir/.pending-x", new byte[0], PutOptions.of("text/plain")));
+        assertThrows(IllegalArgumentException.class,
+                () -> storage.initiateMultipart("b.objmeta", ObjectMetadata.empty()));
+    }
+
+    @Test
+    void versaoDoHeadServeParaEscritaCondicionalEmArquivoCriadoPorFora() throws IOException {
+        Files.writeString(root.resolve("solto.txt"), "externo", StandardCharsets.UTF_8);
+        String version = storage.head("solto.txt").orElseThrow().version();
+
+        assertDoesNotThrow(() -> storage.put("solto.txt", "novo".getBytes(StandardCharsets.UTF_8),
+                PutOptions.of("text/plain").ifVersionMatches(version)));
+    }
+
+    @Test
+    void sidecarQueNaoDescreveMaisOArquivoEhIgnorado() throws IOException {
+        // Ex.: crash entre gravar os dados e o sidecar, ou o arquivo trocado por fora da API.
+        String antiga = storage.put("a.txt", "v1".getBytes(StandardCharsets.UTF_8),
+                PutOptions.of(new ObjectMetadata("text/plain", null, Map.of("tenant", "t1"))));
+        Files.writeString(root.resolve("a.txt"), "conteudo trocado", StandardCharsets.UTF_8);
+
+        ObjectInfo info = storage.head("a.txt").orElseThrow();
+
+        assertNotEquals(antiga, info.version());
+        assertEquals(ObjectMetadata.empty(), info.metadata());
+        assertNotEquals(antiga, storage.list("").findFirst().orElseThrow().version());
+        assertThrows(PreconditionFailedException.class, () -> storage.put("a.txt", new byte[1],
+                PutOptions.of("text/plain").ifVersionMatches(antiga)));
+    }
+
+    @Test
+    void copiaNaoDeixaTemporarioEOSidecarDescreveODestino() throws IOException {
+        storage.put("origem.txt", "conteudo".getBytes(StandardCharsets.UTF_8), PutOptions.of("text/plain"));
+
+        storage.copy("origem.txt", "dir/destino.txt");
+        storage.copy("dir/destino.txt", "dir/destino.txt");
+
+        ObjectInfo info = storage.head("dir/destino.txt").orElseThrow();
+        assertEquals("text/plain", info.metadata().contentType());
+        assertFalse(info.version().startsWith("v"), "versão do sidecar, não sintetizada: " + info.version());
+        try (Stream<Path> files = Files.list(root.resolve("dir"))) {
+            assertEquals(List.of("destino.txt", "destino.txt.objmeta"),
+                    files.map(f -> f.getFileName().toString()).sorted().toList());
+        }
+    }
+
+    @Test
+    void putRespeitaAUmaskEmVezDeGravarSoParaODono() throws IOException {
+        assumeTrue(root.getFileSystem().supportedFileAttributeViews().contains("posix"), "só POSIX");
+        storage.put("multi.txt", new byte[1], PutOptions.of("text/plain"));
+        Path reference = Files.createFile(root.resolve("referencia"));
+
+        assertEquals(Files.getPosixFilePermissions(reference), Files.getPosixFilePermissions(root.resolve("multi.txt")));
     }
 
     @Test
