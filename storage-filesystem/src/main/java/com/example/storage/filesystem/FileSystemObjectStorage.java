@@ -24,6 +24,7 @@ import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.LinkedHashMap;
@@ -40,9 +41,17 @@ import java.util.stream.Stream;
  *
  * <p>Como o filesystem não guarda versão nem metadata do objeto, cada arquivo tem um
  * sidecar {@code <arquivo>.objmeta} (formato {@link Properties}) com {@code version},
- * {@code contentType}, {@code contentDisposition} e {@code user.<chave>}. Um arquivo colocado
- * na árvore por fora desta API (sem sidecar) ainda é lido: {@link #head} devolve metadata vazia
- * e sintetiza a versão a partir da data de modificação.</p>
+ * {@code contentType}, {@code contentDisposition}, {@code user.<chave>} e o tamanho e a data de
+ * modificação do arquivo que ele descreve. Dados e sidecar são gravados em temporários e
+ * renomeados no lugar, então quem lê nunca vê nenhum dos dois pela metade.</p>
+ *
+ * <p>Um sidecar que não bate com o tamanho e a data do arquivo (o arquivo foi trocado por fora da
+ * API, ou o processo caiu entre as duas renomeações) é ignorado, assim como a falta dele:
+ * {@link #head} devolve metadata vazia e sintetiza a versão a partir da data de modificação, a
+ * mesma que {@link Condition.IfVersionMatches} compara.</p>
+ *
+ * <p>Nomes terminados em {@code .objmeta} ou começados por {@code .pending-} são reservados e
+ * rejeitados como chave.</p>
  *
  * <p>Uploads multipart gravam cada parte em {@code .uploads/<uploadId>/} e concatenam os
  * arquivos em {@link MultipartSession#complete}, sem manter nenhuma parte inteira em memória
@@ -163,12 +172,18 @@ public final class FileSystemObjectStorage implements ObjectStorage {
         if (!Files.isRegularFile(source)) {
             throw new ObjectNotFoundException("Origem da cópia não existe: " + sourceKey, null);
         }
+        Path temp = null;
         try {
+            ObjectMetadata metadata = metadataFrom(sidecarOf(source));
             Files.createDirectories(target.getParent());
-            Files.copy(source, target, StandardCopyOption.REPLACE_EXISTING);
-            ObjectMetadata metadata = metadataFrom(loadMetadata(source));
-            writeMetadataFile(target, metadata, UUID.randomUUID().toString());
+            temp = newTempFile(target.getParent());
+            Files.copy(source, temp, StandardCopyOption.REPLACE_EXISTING);
+            publish(temp, target, metadata);
+        } catch (NoSuchFileException e) {
+            deleteQuietly(temp);
+            throw new ObjectNotFoundException("Origem da cópia não existe: " + sourceKey, e);
         } catch (IOException e) {
+            deleteQuietly(temp);
             throw new StorageException("Falha ao copiar " + sourceKey + " para " + targetKey, e);
         }
     }
@@ -195,6 +210,12 @@ public final class FileSystemObjectStorage implements ObjectStorage {
         if (key.equals(UPLOADS_DIR) || key.startsWith(UPLOADS_DIR + "/")) {
             throw new IllegalArgumentException("Chave usa o prefixo reservado " + UPLOADS_DIR + ": " + key);
         }
+        for (String segment : key.split("/")) {
+            if (segment.endsWith(META_SUFFIX) || segment.startsWith(TEMP_PREFIX)) {
+                throw new IllegalArgumentException("Chave usa um nome reservado (" + META_SUFFIX + " ou "
+                        + TEMP_PREFIX + "): " + key);
+            }
+        }
         Path resolved = root.resolve(key).normalize();
         if (!resolved.startsWith(root)) {
             throw new IllegalArgumentException("Chave tenta escapar do root (path traversal): " + key);
@@ -216,7 +237,9 @@ public final class FileSystemObjectStorage implements ObjectStorage {
 
     private String currentVersion(Path path) {
         try {
-            return loadMetadata(path).getProperty("version");
+            return versionOf(sidecarOf(path), Files.getLastModifiedTime(path).toMillis());
+        } catch (NoSuchFileException e) {
+            return null;
         } catch (IOException e) {
             throw new StorageException("Falha ao ler versão atual de " + path, e);
         }
@@ -227,7 +250,7 @@ public final class FileSystemObjectStorage implements ObjectStorage {
         Path temp;
         try {
             Files.createDirectories(parent);
-            temp = Files.createTempFile(parent, TEMP_PREFIX, ".tmp");
+            temp = newTempFile(parent);
         } catch (IOException e) {
             throw new StorageException("Falha ao preparar escrita de " + path, e);
         }
@@ -240,7 +263,7 @@ public final class FileSystemObjectStorage implements ObjectStorage {
                 throw new StorageException("Tamanho informado (" + length + ") difere do conteúdo ("
                         + written + ") em " + path, null);
             }
-            Files.move(temp, path, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+            return publish(temp, path, metadata);
         } catch (IOException e) {
             deleteQuietly(temp);
             throw new StorageException("Falha ao gravar " + path, e);
@@ -248,13 +271,32 @@ public final class FileSystemObjectStorage implements ObjectStorage {
             deleteQuietly(temp);
             throw e;
         }
+    }
+
+    /**
+     * Põe {@code temp} no lugar de {@code target} com um sidecar novo, e devolve a versão. O sidecar é
+     * gravado antes num temporário e renomeado depois dos dados: uma queda entre as duas renomeações
+     * deixa um sidecar que não bate com o arquivo, e que por isso é ignorado. Chamado também por
+     * {@link FileSystemMultipartSession#complete}.
+     */
+    static String publish(Path temp, Path target, ObjectMetadata metadata) throws IOException {
+        BasicFileAttributes data = Files.readAttributes(temp, BasicFileAttributes.class);
         String version = UUID.randomUUID().toString();
+        Path metaTemp = newTempFile(target.getParent());
         try {
-            writeMetadataFile(path, metadata, version);
-        } catch (IOException e) {
-            throw new StorageException("Falha ao gravar metadata de " + path, e);
+            writeMetadataFile(metaTemp, metadata, version, data.size(), data.lastModifiedTime().toMillis());
+            Files.move(temp, target, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+            Files.move(metaTemp, metaPath(target), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+        } catch (IOException | RuntimeException e) {
+            deleteQuietly(metaTemp);
+            throw e;
         }
         return version;
+    }
+
+    /** {@code createFile}, não {@code createTempFile}: este cria só para o dono, e o objeto herdaria isso. */
+    private static Path newTempFile(Path dir) throws IOException {
+        return Files.createFile(dir.resolve(TEMP_PREFIX + UUID.randomUUID()));
     }
 
     private boolean isDataFile(Path path) {
@@ -271,19 +313,19 @@ public final class FileSystemObjectStorage implements ObjectStorage {
     }
 
     private ObjectInfo readInfo(String key, Path dataPath) throws IOException {
-        long size = Files.size(dataPath);
-        Instant lastModified = Files.getLastModifiedTime(dataPath).toInstant();
-        Properties props = loadMetadata(dataPath);
-        String version = props.getProperty("version", "v" + lastModified.toEpochMilli());
-        return new ObjectInfo(key, size, version, lastModified, metadataFrom(props));
+        BasicFileAttributes data = Files.readAttributes(dataPath, BasicFileAttributes.class);
+        Properties props = describing(loadMetadata(dataPath), data);
+        Instant lastModified = data.lastModifiedTime().toInstant();
+        return new ObjectInfo(key, data.size(), versionOf(props, lastModified.toEpochMilli()), lastModified,
+                metadataFrom(props));
     }
 
     private ObjectSummary summaryOf(String key, Path dataPath) {
         try {
-            long size = Files.size(dataPath);
-            Instant lastModified = Files.getLastModifiedTime(dataPath).toInstant();
-            String version = loadMetadata(dataPath).getProperty("version", "v" + lastModified.toEpochMilli());
-            return new ObjectSummary(key, size, version, lastModified);
+            BasicFileAttributes data = Files.readAttributes(dataPath, BasicFileAttributes.class);
+            Instant lastModified = data.lastModifiedTime().toInstant();
+            String version = versionOf(describing(loadMetadata(dataPath), data), lastModified.toEpochMilli());
+            return new ObjectSummary(key, data.size(), version, lastModified);
         } catch (IOException e) {
             throw new UncheckedIOException("Falha ao listar " + key, e);
         }
@@ -299,6 +341,28 @@ public final class FileSystemObjectStorage implements ObjectStorage {
         return new ObjectMetadata(props.getProperty("contentType"), props.getProperty("contentDisposition"), userMetadata);
     }
 
+    /** O sidecar de {@code dataPath}, vazio se ele não existe ou não descreve mais o arquivo. */
+    private static Properties sidecarOf(Path dataPath) throws IOException {
+        return describing(loadMetadata(dataPath), Files.readAttributes(dataPath, BasicFileAttributes.class));
+    }
+
+    /**
+     * {@code props} se ele descreve o arquivo (mesmo tamanho e data de modificação), senão vazio. Sidecars
+     * gravados antes de guardarem tamanho e data valem como estão.
+     */
+    private static Properties describing(Properties props, BasicFileAttributes data) {
+        String size = props.getProperty("size");
+        String mtime = props.getProperty("mtime");
+        boolean stale = (size != null && !size.equals(String.valueOf(data.size())))
+                || (mtime != null && !mtime.equals(String.valueOf(data.lastModifiedTime().toMillis())));
+        return stale ? new Properties() : props;
+    }
+
+    /** A versão do sidecar ou, sem ele, uma derivada da data de modificação. */
+    private static String versionOf(Properties sidecar, long lastModifiedMillis) {
+        return sidecar.getProperty("version", "v" + lastModifiedMillis);
+    }
+
     private static Properties loadMetadata(Path dataPath) throws IOException {
         Properties props = new Properties();
         Path metaPath = metaPath(dataPath);
@@ -310,10 +374,12 @@ public final class FileSystemObjectStorage implements ObjectStorage {
         return props;
     }
 
-    /** Chamado também por {@link FileSystemMultipartSession#complete}. */
-    static void writeMetadataFile(Path dataPath, ObjectMetadata metadata, String version) throws IOException {
+    private static void writeMetadataFile(Path file, ObjectMetadata metadata, String version, long size,
+                                          long lastModifiedMillis) throws IOException {
         Properties props = new Properties();
         props.setProperty("version", version);
+        props.setProperty("size", String.valueOf(size));
+        props.setProperty("mtime", String.valueOf(lastModifiedMillis));
         if (metadata.contentType() != null) {
             props.setProperty("contentType", metadata.contentType());
         }
@@ -321,7 +387,7 @@ public final class FileSystemObjectStorage implements ObjectStorage {
             props.setProperty("contentDisposition", metadata.contentDisposition());
         }
         metadata.userMetadata().forEach((k, v) -> props.setProperty("user." + k, v));
-        try (OutputStream out = Files.newOutputStream(metaPath(dataPath))) {
+        try (OutputStream out = Files.newOutputStream(file)) {
             props.store(out, null);
         }
     }
@@ -331,6 +397,9 @@ public final class FileSystemObjectStorage implements ObjectStorage {
     }
 
     private static void deleteQuietly(Path path) {
+        if (path == null) {
+            return;
+        }
         try {
             Files.deleteIfExists(path);
         } catch (IOException ignored) {
