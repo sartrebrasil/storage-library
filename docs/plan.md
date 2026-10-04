@@ -41,7 +41,7 @@ Exceções: `StorageException` > `ObjectNotFoundException`,
 | `copy` | Bloqueante, só dentro do mesmo storage; na OCI consulta a work request até concluir. |
 | `deleteAll` | Não atômico; devolve as chaves que falharam; fallback em loop paralelo. |
 | `list` / `listDirectory` | `list` plana; `listDirectory` um nível com separador `/` fixo (único aceito pela OCI); ambas em ordem lexicográfica. Erros em páginas tardias também viram `StorageException`. |
-| Metadata | Chaves `[a-z0-9_]`, valores ASCII, validados no core. |
+| Metadata | Chaves `[a-z0-9_]`, valores ASCII, validados no core na escrita (`PutOptions`, `initiateMultipart`); `head` devolve a metadata como o provedor a guarda. |
 | Checksum | Interno a cada adapter, fora da API. |
 
 ## Testes
@@ -65,3 +65,4 @@ Exceções: `StorageException` > `ObjectNotFoundException`,
 Planos em andamento ficam em [`docs/plans/active/`](plans/active/):
 
 - [Absorver as abstrações exigidas pelo oobj-ms-dfe-relatorios](plans/active/2026-09-28-absorver-abstracoes-dfe-relatorios.md)
+- [Correções do code review completo](plans/active/2026-10-03-correcoes-code-review.md) (R0 a R4 concluídas)
