@@ -151,6 +151,20 @@ public final class AzureBlobObjectStorage implements ObjectStorage {
      */
     @Override
     public ObjectContent read(String key, ByteRange range) {
+        try {
+            return readOnce(key, range);
+        } catch (BlobStorageException e) {
+            // Sufixo: o blob mudou entre o getProperties e a leitura (If-Match); com o tamanho novo, uma vez mais.
+            if (range.isSuffix() && e.getStatusCode() == 412) {
+                return readOnce(key, range);
+            }
+            throw translate(e, "Falha ao ler " + key);
+        } catch (AzureException e) {
+            throw translate(e, "Falha ao ler " + key);
+        }
+    }
+
+    private ObjectContent readOnce(String key, ByteRange range) {
         BlobClient blob = blob(key);
         BlobInputStreamOptions options = new BlobInputStreamOptions();
         try {
@@ -171,6 +185,8 @@ public final class AzureBlobObjectStorage implements ObjectStorage {
                 closeQuietly(in, e);
                 throw e;
             }
+        } catch (BlobStorageException e) {
+            throw e;   // read decide se repete
         } catch (AzureException e) {
             throw translate(e, "Falha ao ler " + key);
         }
@@ -223,7 +239,12 @@ public final class AzureBlobObjectStorage implements ObjectStorage {
     @Override
     public void delete(String key) {
         try {
-            blob(key).deleteIfExists();
+            blob(key).delete();
+        } catch (BlobStorageException e) {
+            // deleteIfExists trataria também ContainerNotFound como "não existia"
+            if (e.getStatusCode() != 404 || containerMissing(e)) {
+                throw translate(e, "Falha ao apagar " + key);
+            }
         } catch (AzureException e) {
             throw translate(e, "Falha ao apagar " + key);
         }
@@ -360,7 +381,7 @@ public final class AzureBlobObjectStorage implements ObjectStorage {
         return e instanceof BlobStorageException b ? b.getStatusCode() : -1;
     }
 
-    private static boolean containerMissing(AzureException e) {
+    static boolean containerMissing(AzureException e) {
         return e instanceof BlobStorageException b && BlobErrorCode.CONTAINER_NOT_FOUND.equals(b.getErrorCode());
     }
 
