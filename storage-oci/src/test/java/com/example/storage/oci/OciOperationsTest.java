@@ -30,6 +30,7 @@ import com.oracle.bmc.objectstorage.responses.CopyObjectResponse;
 import com.oracle.bmc.objectstorage.responses.CreatePreauthenticatedRequestResponse;
 import com.oracle.bmc.objectstorage.responses.GetObjectResponse;
 import com.oracle.bmc.objectstorage.responses.GetWorkRequestResponse;
+import com.oracle.bmc.objectstorage.responses.HeadBucketResponse;
 import com.oracle.bmc.objectstorage.responses.HeadObjectResponse;
 import com.oracle.bmc.objectstorage.responses.ListObjectsResponse;
 import com.oracle.bmc.objectstorage.responses.PutObjectResponse;
@@ -123,13 +124,43 @@ class OciOperationsTest {
 
     @Test
     void headDiferenciaObjetoDeBucketInexistente() {
-        when(client.headObject(any()))
-                .thenThrow(new BmcException(404, "ObjectNotFound", "no object", "req"))
-                .thenThrow(new BmcException(404, "BucketNotFound", "no bucket", "req"));
+        // HEAD não tem corpo: o SDK monta o 404 com serviceCode "Unknown", seja objeto ou bucket que falta.
+        when(client.headObject(any())).thenThrow(new BmcException(404, "Unknown", "", "req"));
+        when(client.headBucket(any()))
+                .thenReturn(HeadBucketResponse.builder().build())
+                .thenThrow(new BmcException(404, "Unknown", "", "req"));
 
         assertTrue(storage.head("k").isEmpty());
         StorageException e = assertThrows(StorageException.class, () -> storage.head("k"));
         assertFalse(e instanceof ObjectNotFoundException);
+    }
+
+    @Test
+    void putCondicionalEmBucketInexistenteNaoViraPrecondicao() {
+        when(client.putObject(any())).thenThrow(new BmcException(404, "BucketNotFound", "no bucket", "req"));
+
+        StorageException e = assertThrows(StorageException.class, () -> storage.put("k", new byte[1],
+                PutOptions.of("text/plain").ifVersionMatches("e1")));
+
+        assertFalse(e instanceof PreconditionFailedException, e.toString());
+    }
+
+    @Test
+    void contentRangeDegeneradoFechaORespostaEViraStorageException() throws Exception {
+        boolean[] closed = {false};
+        ByteArrayInputStream body = new ByteArrayInputStream(new byte[0]) {
+            @Override
+            public void close() {
+                closed[0] = true;
+            }
+        };
+        when(client.getObject(any())).thenReturn(GetObjectResponse.builder().inputStream(body).contentLength(0L)
+                .contentRange(Range.parse("bytes 5-4/10")).build());
+
+        StorageException e = assertThrows(StorageException.class, () -> storage.read("k", ByteRange.of(5, 1)));
+
+        assertEquals(StorageException.class, e.getClass());
+        assertTrue(closed[0]);
     }
 
     @Test
