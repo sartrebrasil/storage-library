@@ -13,7 +13,6 @@ import com.azure.storage.blob.options.BlockBlobStageBlockOptions;
 import com.azure.storage.blob.specialized.BlockBlobClient;
 import com.example.storage.MultipartSession;
 import com.example.storage.ObjectMetadata;
-import com.example.storage.StorageException;
 import com.example.storage.UploadedPart;
 
 import java.nio.ByteBuffer;
@@ -66,7 +65,7 @@ final class AzureBlobMultipartSession implements MultipartSession {
                     null, Context.NONE);
             return new UploadedPart(partNumber, blockId, Base64.getEncoder().encodeToString(md5));
         } catch (AzureException e) {
-            throw new StorageException("Falha ao enviar parte " + partNumber + " de " + key, e);
+            throw AzureBlobObjectStorage.translate(e, "Falha ao enviar parte " + partNumber + " de " + key);
         }
     }
 
@@ -85,7 +84,7 @@ final class AzureBlobMultipartSession implements MultipartSession {
         try {
             blob.commitBlockListWithResponse(options, null, Context.NONE);
         } catch (AzureException e) {
-            throw new StorageException("Falha ao concluir upload de " + key, e);
+            throw AzureBlobObjectStorage.translate(e, "Falha ao concluir upload de " + key);
         }
     }
 
@@ -122,9 +121,9 @@ final class AzureBlobMultipartSession implements MultipartSession {
             if (e.getStatusCode() == 404) {
                 return List.of();   // blob sem nenhum bloco
             }
-            throw new StorageException("Falha ao listar blocos de " + key, e);
+            throw AzureBlobObjectStorage.translate(e, "Falha ao listar blocos de " + key);
         } catch (AzureException e) {
-            throw new StorageException("Falha ao listar blocos de " + key, e);
+            throw AzureBlobObjectStorage.translate(e, "Falha ao listar blocos de " + key);
         }
     }
 
