@@ -164,6 +164,10 @@ public final class SftpObjectStorage implements ObjectStorage {
         try {
             channel = connection.open();
             file = channel.sftp().open(path, Set.of(OpenMode.READ));
+            if (file.fetchAttributes().getType() != FileMode.Type.REGULAR) {
+                // O OpenSSH abre uma pasta para leitura; a falha só viria ao consumir o stream
+                throw new ObjectNotFoundException("Objeto não encontrado: " + key, null);
+            }
             long size = file.length();
             ByteRange resolved = range.resolve(size);
             InputStream body = resolved.isAll() ? file.new RemoteFileInputStream()
@@ -220,8 +224,13 @@ public final class SftpObjectStorage implements ObjectStorage {
     public void delete(String key) {
         String path = resolve(key);
         withSftp("Falha ao apagar " + key, sftp -> {
+            FileAttributes attrs = sftp.statExistence(path);
+            if (attrs == null || attrs.getType() != FileMode.Type.REGULAR) {
+                return null;   // inexistente, ou uma pasta, que não é objeto: idempotente
+            }
             deleteIfExists(sftp, path);
             deleteIfExists(sftp, metaPath(path));
+            deleteEmptyParents(sftp, parentOf(path));
             return null;
         });
     }
@@ -397,7 +406,14 @@ public final class SftpObjectStorage implements ObjectStorage {
                 }
                 String folder = key + "/";
                 if (folder.startsWith(prefix) || prefix.startsWith(folder)) {
-                    walk(sftp, entry.getPath(), prefix, sink);
+                    try {
+                        walk(sftp, entry.getPath(), prefix, sink);
+                    } catch (SFTPException e) {
+                        if (!isNotFound(e)) {
+                            throw e;
+                        }
+                        // pasta apagada durante a listagem: só não aparece
+                    }
                 }
             } else if (entry.isRegularFile() && isDataFile(name) && key.startsWith(prefix)) {
                 FileAttributes attrs = entry.getAttributes();
@@ -417,6 +433,17 @@ public final class SftpObjectStorage implements ObjectStorage {
             try (InputStream is = in.new RemoteFileInputStream();
                  OutputStream os = out.new RemoteFileOutputStream()) {
                 is.transferTo(os);
+            }
+        }
+    }
+
+    /** Best-effort: para na primeira pasta que não está vazia (ou que outra escrita acabou de usar). */
+    private void deleteEmptyParents(SFTPClient sftp, String dir) {
+        for (String current = dir; current.startsWith(root + "/"); current = parentOf(current)) {
+            try {
+                sftp.rmdir(current);
+            } catch (IOException notEmptyOrGone) {
+                return;
             }
         }
     }
