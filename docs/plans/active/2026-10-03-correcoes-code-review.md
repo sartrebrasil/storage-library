@@ -1,6 +1,6 @@
 # Plano: correções do code review completo
 
-- **Status:** ativo; R0 a R4 concluídas; próxima: R5
+- **Status:** ativo; R0 a R5 concluídas; próxima: R6
 - **Criado em:** 03/10/2026
 - **Origem:** code review completo dos 11 módulos (commit `f0884ec`). Itens marcados com ✔ foram
   confirmados no código ou nos fontes dos SDKs em `~/.m2` (AWS 2.55, GCS 2.74, Azure Blob 12.35,
@@ -32,7 +32,7 @@ reduzir a duplicação entre adapters e fechar as lacunas de teste que deixaram 
 | R2 | Integridade em filesystem e SFTP | A5–A8, M7–M9 | R1 (A1) | Concluída |
 | R3 | Adapters de nuvem | A4, A10, A11, M3–M6 | R1 (A3) | Concluída |
 | R4 | SFTP operacional | A9, M10 | R2 | Concluída |
-| R5 | Spring: robustez e observabilidade | M1, M2, B-Spring | R0 (C2, C3) | Pendente |
+| R5 | Spring: robustez e observabilidade | M1, M2, B-Spring | R0 (C2, C3) | Concluída |
 | R6 | Baixa severidade restante | B-* | R1–R5 | Pendente |
 | R7 | Refatoração: duplicação para o core | F1–F7 | R2, R3 | Pendente |
 | R8 | Lacunas de teste | T1–T4 | paralela a todas | Pendente |
@@ -67,7 +67,9 @@ reduzir a duplicação entre adapters e fechar as lacunas de teste que deixaram 
 | M9 | Feito (sem teste) | `b0a4e09` |
 | M10 | Feito | `b6f626c` |
 | Fora do plano | Corrida no `mkdirs` do SFTP com partes em paralelo | `5b452b2` |
-| M1, M2, B-Spring | Pendente (R5) | |
+| M1 | Feito | `6a3df1c` |
+| M2 | Feito como documentação no javadoc de `list`/`listDirectory` | `4f909f0` |
+| B-Spring | Feito: `Error`, `AtomicBoolean`, `SIZED`, `toString`, `azure-identity` (`4f909f0`); `ETag`/`If-Range` (`6a3df1c`) | `4f909f0`, `6a3df1c` |
 | R6, R7, R8 | Pendente | |
 
 ## R0 — Críticos
@@ -203,3 +205,9 @@ reduzir a duplicação entre adapters e fechar as lacunas de teste que deixaram 
   acontece quando o sshj já marcou a conexão como desconectada, o que o keepalive acelera. M10: `checkAccess`
   é um `stat` do root, e `list` começa na pasta mais funda do prefixo; um prefixo com `..` ou nome
   reservado na parte de pasta passa a ser rejeitado como chave.
+- **04/10/2026 — R5 concluída.** M2 ficou como documentação: encerrar a observação de `list` antes do
+  fim ou do `close` mudaria o que o timer mede, e um stream não fechado já é vazamento no adapter. O
+  `If-Range` entrou como método novo, `ObjectResponses.attachmentForRequest(storage, head, HttpHeaders,
+  attachment, permit)`, e não como sobrecarga de `attachment`: com `null` no lugar do `Range`, a
+  sobrecarga deixaria ambíguas chamadas que já existem. Todas as respostas passam a ter `ETag` e
+  `Last-Modified`.
