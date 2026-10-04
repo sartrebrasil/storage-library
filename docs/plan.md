@@ -65,4 +65,4 @@ Exceções: `StorageException` > `ObjectNotFoundException`,
 Planos em andamento ficam em [`docs/plans/active/`](plans/active/):
 
 - [Absorver as abstrações exigidas pelo oobj-ms-dfe-relatorios](plans/active/2026-09-28-absorver-abstracoes-dfe-relatorios.md)
-- [Correções do code review completo](plans/active/2026-10-03-correcoes-code-review.md) (R0 a R5 concluídas)
+- [Correções do code review completo](plans/active/2026-10-03-correcoes-code-review.md) (R0 a R6 concluídas)
