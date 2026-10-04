@@ -90,6 +90,10 @@ public interface ObjectStorage {
     /**
      * Lista os objetos cujo nome começa com {@code prefix}, em ordem lexicográfica.
      * As páginas são buscadas sob demanda enquanto o stream é consumido.
+     *
+     * <p>Feche o stream (try-with-resources) quando não o consumir até o fim, como em
+     * {@code findFirst} ou {@code limit}: a listagem pode manter recursos abertos, e a métrica do
+     * starter mede até o fim ou o {@code close}.</p>
      */
     Stream<ObjectSummary> list(String prefix);
 
@@ -100,7 +104,7 @@ public interface ObjectStorage {
      * para uma pasta, termine o prefixo em {@code /} (ex.: {@code "relatorios/2026/"}).
      *
      * <p>O separador é fixo porque {@code /} é o único que os quatro provedores aceitam
-     * (a OCI não suporta outro).</p>
+     * (a OCI não suporta outro). Feche o stream como em {@link #list}.</p>
      */
     default Stream<ListEntry> listDirectory(String prefix) {
         // Padrão genérico: percorre todos os objetos abaixo do prefixo. Adapters usam o delimiter nativo.
