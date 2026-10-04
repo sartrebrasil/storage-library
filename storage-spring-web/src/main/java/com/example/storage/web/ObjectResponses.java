@@ -17,22 +17,43 @@ import java.io.FilterInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.time.Instant;
+import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
 import java.util.Optional;
 
 /**
  * Resposta de download por Spring MVC, lida direto do storage: {@code 200} ou {@code 206} conforme o
- * {@code Range}, com {@code Content-Disposition}, {@code Accept-Ranges}, {@code Content-Range} e
- * {@code Content-Length}. O corpo é o stream do storage, sem cópia em memória.
+ * {@code Range}, com {@code Content-Disposition}, {@code Accept-Ranges}, {@code Content-Range},
+ * {@code Content-Length}, {@code ETag} e {@code Last-Modified}. O corpo é o stream do storage, sem cópia
+ * em memória.
  *
  * <pre>{@code
  * StreamLimiter.Permit permit = limiter.tryAcquire().orElseThrow(TooManyDownloads::new);
- * return ObjectResponses.attachment(storage, head, request.getHeader("Range"),
+ * return ObjectResponses.attachmentForRequest(storage, head, requestHeaders,
  *         Attachment.of("report-1.csv.gz", "application/gzip"), permit);
  * }</pre>
+ *
+ * <p>Com os cabeçalhos da requisição, um {@code If-Range} que não corresponde mais ao objeto (versão ou data
+ * diferente) serve o objeto inteiro em vez da faixa: é como o navegador retoma um download sem emendar
+ * bytes de duas versões.</p>
  */
 public final class ObjectResponses {
 
     private ObjectResponses() {
+    }
+
+    /**
+     * Como {@link #attachment(ObjectStorage, ObjectInfo, String, Attachment, StreamLimiter.Permit)}, lendo
+     * {@code Range} e {@code If-Range} de {@code request}.
+     */
+    public static ResponseEntity<Resource> attachmentForRequest(ObjectStorage storage, ObjectInfo head,
+                                                                HttpHeaders request, Attachment attachment,
+                                                                StreamLimiter.Permit permit) {
+        String range = request.getFirst(HttpHeaders.RANGE);
+        String ifRange = request.getFirst(HttpHeaders.IF_RANGE);
+        return attachment(storage, head, ifRange == null || matches(ifRange, head) ? range : null, attachment, permit);
     }
 
     /** Como {@link #attachment(ObjectStorage, ObjectInfo, String, Attachment, StreamLimiter.Permit)}, sem limite. */
@@ -53,6 +74,13 @@ public final class ObjectResponses {
      */
     public static ResponseEntity<Resource> attachment(ObjectStorage storage, ObjectInfo head, String rangeHeader,
                                                       Attachment attachment, StreamLimiter.Permit permit) {
+        MediaType contentType;
+        try {
+            contentType = MediaType.parseMediaType(attachment.contentType());   // antes de abrir o stream
+        } catch (RuntimeException e) {
+            release(permit);
+            throw e;
+        }
         ObjectContent content;
         try {
             content = storage.read(head.key(), ByteRange.parseHttpOrAll(rangeHeader));
@@ -65,12 +93,24 @@ public final class ObjectResponses {
         }
 
         HttpHeaders headers = new HttpHeaders();
-        headers.setContentDisposition(contentDisposition(attachment.fileName()));
-        headers.setContentType(MediaType.parseMediaType(attachment.contentType()));
-        headers.setContentLength(content.contentLength());
-        headers.set(HttpHeaders.ACCEPT_RANGES, "bytes");
-        content.contentRange().ifPresent(value -> headers.set(HttpHeaders.CONTENT_RANGE, value));
-        attachment.headers().forEach(headers::set);
+        try {
+            headers.setContentDisposition(contentDisposition(attachment.fileName()));
+            headers.setContentType(contentType);
+            headers.setContentLength(content.contentLength());
+            headers.set(HttpHeaders.ACCEPT_RANGES, "bytes");
+            content.contentRange().ifPresent(value -> headers.set(HttpHeaders.CONTENT_RANGE, value));
+            if (head.version() != null) {
+                headers.setETag(etag(head.version()));
+            }
+            if (head.lastModified() != null) {
+                headers.setLastModified(head.lastModified());
+            }
+            attachment.headers().forEach(headers::set);
+        } catch (RuntimeException e) {
+            closeQuietly(content);
+            release(permit);
+            throw e;
+        }
 
         InputStream body = permit == null ? content.stream() : new ReleasingInputStream(content.stream(), permit);
         // A classe exata InputStreamResource, não uma subclasse: só para ela o Spring MVC não reaplica o Range da
@@ -83,6 +123,39 @@ public final class ObjectResponses {
     /** {@code bytes *&#47;<total>}, o {@code Content-Range} de um {@code 416}; vazio se o tamanho é desconhecido. */
     public static Optional<String> unsatisfiedContentRange(RangeNotSatisfiableException e) {
         return e.totalSize().isPresent() ? Optional.of("bytes */" + e.totalSize().getAsLong()) : Optional.empty();
+    }
+
+    /** A versão do storage como ETag forte: S3 e Azure já a devolvem entre aspas; GCS, OCI e os demais, não. */
+    private static String etag(String version) {
+        return version.startsWith("\"") ? version : "\"" + version + "\"";
+    }
+
+    /**
+     * {@code If-Range} com ETag compara de forma forte ({@code W/} nunca corresponde); com data, exige a mesma
+     * data de modificação, em segundos. Um valor que não dá para ler não corresponde.
+     */
+    private static boolean matches(String ifRange, ObjectInfo head) {
+        String value = ifRange.strip();
+        if (value.startsWith("\"") || value.startsWith("W/")) {
+            return head.version() != null && value.equals(etag(head.version()));
+        }
+        if (head.lastModified() == null) {
+            return false;
+        }
+        try {
+            Instant date = ZonedDateTime.parse(value, DateTimeFormatter.RFC_1123_DATE_TIME).toInstant();
+            return date.getEpochSecond() == head.lastModified().getEpochSecond();
+        } catch (DateTimeParseException e) {
+            return false;
+        }
+    }
+
+    private static void closeQuietly(ObjectContent content) {
+        try {
+            content.close();
+        } catch (IOException ignored) {
+            // a falha que importa é a original
+        }
     }
 
     /** Nome ASCII sai só em {@code filename="…"}; com acento, também em {@code filename*} (RFC 6266). */
