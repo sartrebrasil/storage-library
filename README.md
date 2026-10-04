@@ -97,6 +97,7 @@ por outras ferramentas, e regravá-la fora da regra falha com `IllegalArgumentEx
 | `presignPut` impõe metadata e condição | Sim (assinados) | Sim (assinados) | Só `ifNotExists` (SAS sem "write") | Não |
 | `deleteAll` | Lote de 1000 | Lote de 100 | Uma chamada por objeto | Uma chamada por objeto |
 | `copy` | CopyObject; > 5 GiB em partes | Rewrite até concluir | Cópia assíncrona com polling | Work request com polling |
+| Multipart concorrente na mesma chave | Independentes | Independentes | O commit de um descarta os blocos dos outros (`InvalidBlockList`) | Independentes |
 | Chamadas em `read` com faixa | 1 | 2 (metadados + leitura) | 1; sufixo: 2 | 1 |
 | `checkAccess` / permissão exigida | HeadBucket / `s3:ListBucket` | Lista 1 objeto / `storage.objects.list` | Container exists / leitura de propriedades do container | HeadBucket / `BUCKET_INSPECT` |
 

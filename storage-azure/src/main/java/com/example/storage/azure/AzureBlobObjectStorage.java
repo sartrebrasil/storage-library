@@ -49,6 +49,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.TimeoutException;
 import java.util.stream.Stream;
 
 /**
@@ -68,6 +69,10 @@ import java.util.stream.Stream;
  *
  * <p>{@link #deleteAll} usa o padrão da interface (uma chamada por blob). {@link #put} usa
  * Put Blob numa requisição; para objetos grandes, use o multipart.</p>
+ *
+ * <p>Uploads multipart ao mesmo blob não são independentes como no S3, GCS e OCI: o commit de um
+ * deles (ou um {@link #put} na mesma chave) descarta os blocos ainda não commitados dos outros, que
+ * falham no {@link MultipartSession#complete} com {@code InvalidBlockList}.</p>
  */
 public final class AzureBlobObjectStorage implements ObjectStorage {
 
@@ -106,7 +111,7 @@ public final class AzureBlobObjectStorage implements ObjectStorage {
         try {
             return blob(key).getBlockBlobClient().uploadWithResponse(upload, null, Context.NONE).getValue().getETag();
         } catch (AzureException e) {
-            if (options.condition() instanceof Condition.IfVersionMatches && status(e) == 404) {
+            if (options.condition() instanceof Condition.IfVersionMatches && status(e) == 404 && !containerMissing(e)) {
                 throw new PreconditionFailedException("Pré-condição falhou: " + key + " não existe", e);
             }
             throw translate(e, "Falha ao gravar " + key);
@@ -226,17 +231,53 @@ public final class AzureBlobObjectStorage implements ObjectStorage {
 
     @Override
     public void copy(String sourceKey, String targetKey) {
+        String message = "Falha ao copiar " + sourceKey + " para " + targetKey;
+        PollResponse<BlobCopyInfo> result;
         try {
             // Mesma conta: o Azure autoriza a origem com a credencial do próprio cliente.
-            PollResponse<BlobCopyInfo> result = blob(targetKey)
+            result = blob(targetKey)
                     .beginCopy(blob(sourceKey).getBlobUrl(), Duration.ofSeconds(1))
                     .waitForCompletion(COPY_TIMEOUT);
-            if (result.getStatus() != LongRunningOperationStatus.SUCCESSFULLY_COMPLETED) {
-                throw new StorageException("Cópia de " + sourceKey + " para " + targetKey
-                        + " terminou com status " + result.getStatus(), null);
+        } catch (RuntimeException e) {
+            throw copyFailure(e, targetKey, message);
+        }
+        if (result.getStatus() != LongRunningOperationStatus.SUCCESSFULLY_COMPLETED) {
+            throw new StorageException("Cópia de " + sourceKey + " para " + targetKey
+                    + " terminou com status " + result.getStatus(), null);
+        }
+    }
+
+    /**
+     * {@code waitForCompletion} embrulha timeout, interrupção e a falha de um poll num {@code RuntimeException}
+     * genérico, não num {@link AzureException}. Em timeout ou interrupção a cópia segue no servidor: aborta.
+     */
+    private StorageException copyFailure(RuntimeException e, String targetKey, String message) {
+        for (Throwable cause = e; cause != null; cause = cause.getCause()) {
+            if (cause instanceof AzureException azure) {
+                return translate(azure, message);
             }
-        } catch (AzureException e) {
-            throw translate(e, "Falha ao copiar " + sourceKey + " para " + targetKey);
+            if (cause instanceof TimeoutException) {
+                abortCopyQuietly(targetKey);
+                return new StorageException(message + " (não terminou em " + COPY_TIMEOUT + ")", e);
+            }
+            if (cause instanceof InterruptedException) {
+                abortCopyQuietly(targetKey);   // antes de restaurar o flag, que faria a chamada falhar
+                Thread.currentThread().interrupt();
+                return new StorageException(message + " (interrompida)", e);
+            }
+        }
+        return new StorageException(message, e);
+    }
+
+    private void abortCopyQuietly(String targetKey) {
+        try {
+            BlobClient target = blob(targetKey);
+            String copyId = target.getProperties().getCopyId();
+            if (copyId != null) {
+                target.abortCopyFromUrl(copyId);
+            }
+        } catch (RuntimeException ignored) {
+            // best-effort: a cópia pendente não fica visível como objeto concluído
         }
     }
 
