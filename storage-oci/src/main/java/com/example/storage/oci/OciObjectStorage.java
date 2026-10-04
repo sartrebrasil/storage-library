@@ -284,13 +284,15 @@ public final class OciObjectStorage implements ObjectStorage {
 
     @Override
     public void copy(String sourceKey, String targetKey) {
+        // Antes de qualquer chamada: um endpoint sem a região (proxy, endpoint próprio) é erro de configuração.
+        String region = region();
         // A cópia só falha dentro da work request; checar antes garante o ObjectNotFoundException do contrato.
         if (head(sourceKey).isEmpty()) {
             throw new ObjectNotFoundException("Origem da cópia não existe: " + uri(sourceKey), null);
         }
         CopyObjectDetails details = CopyObjectDetails.builder()
                 .sourceObjectName(sourceKey)
-                .destinationRegion(region())
+                .destinationRegion(region)
                 .destinationNamespace(namespace)
                 .destinationBucket(bucket)
                 .destinationObjectName(targetKey)
@@ -388,10 +390,13 @@ public final class OciObjectStorage implements ObjectStorage {
 
     /** Região do endpoint do cliente: {@code https://[<ns>.]objectstorage.<região>.<domínio>}. */
     private String region() {
-        List<String> labels = Arrays.asList(URI.create(client.getEndpoint()).getHost().split("\\."));
+        String endpoint = client.getEndpoint();
+        String host = endpoint == null ? null : URI.create(endpoint).getHost();
+        List<String> labels = host == null ? List.of() : Arrays.asList(host.split("\\."));
         int index = labels.indexOf("objectstorage");
         if (index < 0 || index + 1 >= labels.size()) {
-            throw new IllegalStateException("Não foi possível obter a região do endpoint " + client.getEndpoint());
+            throw new IllegalStateException("Não foi possível obter a região do endpoint " + client.getEndpoint()
+                    + " (esperado objectstorage.<região>.oraclecloud.com), necessária para copy");
         }
         return labels.get(index + 1);
     }
