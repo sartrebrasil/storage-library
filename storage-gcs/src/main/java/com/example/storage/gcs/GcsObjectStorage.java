@@ -32,6 +32,7 @@ import com.google.cloud.storage.Storage;
 import com.google.cloud.storage.StorageBatch;
 import com.google.cloud.storage.multipartupload.model.CreateMultipartUploadRequest;
 
+import java.io.FilterInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
@@ -64,6 +65,7 @@ import java.util.stream.StreamSupport;
 public final class GcsObjectStorage implements ObjectStorage {
 
     private static final int DELETE_BATCH = 100;
+    private static final int MAX_PUT_BUFFER = 15 * 1024 * 1024;
 
     private final Storage storage;
     private final MultipartUploadClient multipart;
@@ -96,7 +98,10 @@ public final class GcsObjectStorage implements ObjectStorage {
                     new Storage.BlobWriteOption[] {Storage.BlobWriteOption.generationMatch(generation(match.version()))};
         };
         try {
-            return String.valueOf(storage.createFrom(info, data, conditions).getGeneration());
+            // O SDK lê até o fim do stream e, sem bufferSize, aloca 15 MiB por chamada qualquer que seja o tamanho.
+            int bufferSize = (int) Math.min(length, MAX_PUT_BUFFER);
+            return String.valueOf(storage.createFrom(info, new ExactLengthInputStream(data, length), bufferSize,
+                    conditions).getGeneration());
         } catch (BaseServiceException e) {
             if (options.condition() instanceof Condition.IfVersionMatches && e.getCode() == 404) {
                 throw new PreconditionFailedException("Pré-condição falhou: " + uri(key) + " não existe", e);
@@ -325,5 +330,41 @@ public final class GcsObjectStorage implements ObjectStorage {
 
     static StorageException translate(BaseServiceException e, String message) {
         return StorageException.fromHttpStatus(e.getCode(), message, e);
+    }
+
+    /**
+     * Entrega exatamente {@code length} bytes e falha se {@code data} tiver menos ou mais. O upload só é
+     * concluído no fim do stream, então a falha impede que o objeto seja gravado truncado ou com sobra.
+     */
+    private static final class ExactLengthInputStream extends FilterInputStream {
+
+        private long remaining;
+
+        ExactLengthInputStream(InputStream data, long length) {
+            super(data);
+            this.remaining = length;
+        }
+
+        @Override
+        public int read() throws IOException {
+            byte[] one = new byte[1];
+            return read(one, 0, 1) < 0 ? -1 : one[0] & 0xFF;
+        }
+
+        @Override
+        public int read(byte[] b, int off, int len) throws IOException {
+            if (remaining == 0) {
+                if (in.read() >= 0) {
+                    throw new IOException("O stream tem mais bytes que o tamanho informado");
+                }
+                return -1;
+            }
+            int n = in.read(b, off, (int) Math.min(len, remaining));
+            if (n < 0) {
+                throw new IOException("O stream terminou " + remaining + " bytes antes do tamanho informado");
+            }
+            remaining -= n;
+            return n;
+        }
     }
 }
