@@ -8,7 +8,6 @@ import net.schmizz.sshj.SSHClient;
 import net.schmizz.sshj.sftp.OpenMode;
 import net.schmizz.sshj.sftp.RemoteFile;
 import net.schmizz.sshj.sftp.RemoteResourceInfo;
-import net.schmizz.sshj.sftp.RenameFlags;
 import net.schmizz.sshj.sftp.SFTPClient;
 import net.schmizz.sshj.sftp.SFTPException;
 
@@ -19,7 +18,6 @@ import java.io.OutputStream;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Set;
-import java.util.UUID;
 
 /**
  * Cada parte vira um arquivo em {@code .uploads/<uploadId>/part-<n>}; {@link #complete}
@@ -79,7 +77,7 @@ final class SftpMultipartSession implements MultipartSession {
                 .sorted(Comparator.comparingInt(UploadedPart::partNumber))
                 .toList();
         String parent = SftpObjectStorage.parentOf(targetPath);
-        String temp = parent + "/.pending-" + uploadId;
+        String temp = SftpObjectStorage.tempPath(targetPath);
         try (SFTPClient sftp = sshClient.newSFTPClient()) {
             SftpObjectStorage.mkdirs(sftp, parent);
             try (RemoteFile out = sftp.open(temp, Set.of(OpenMode.WRITE, OpenMode.CREAT, OpenMode.TRUNC))) {
@@ -93,8 +91,7 @@ final class SftpMultipartSession implements MultipartSession {
                     }
                 }
             }
-            sftp.rename(temp, targetPath, Set.of(RenameFlags.OVERWRITE, RenameFlags.ATOMIC));
-            SftpObjectStorage.writeMetadata(sftp, targetPath, metadata, UUID.randomUUID().toString());
+            SftpObjectStorage.publish(sftp, temp, targetPath, metadata, false);
         } catch (IOException e) {
             deleteQuietly(temp);
             throw new StorageException("Falha ao concluir upload de " + key, e);
