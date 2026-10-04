@@ -1,7 +1,9 @@
 package com.example.storage.s3;
 
+import com.example.storage.AccessDeniedException;
 import com.example.storage.MultipartSession;
 import com.example.storage.ObjectMetadata;
+import com.example.storage.ObjectNotFoundException;
 import com.example.storage.PutOptions;
 import com.example.storage.StorageException;
 import com.example.storage.UploadedPart;
@@ -188,6 +190,17 @@ class S3ObjectStorageTest {
 
         StorageException e = assertThrows(StorageException.class, () -> session.uploadPart(1, new byte[1], 1));
         assertInstanceOf(S3Exception.class, e.getCause());
+    }
+
+    @Test
+    void falhasDaSessaoMantemOTipoDaExcecao() {
+        when(s3.uploadPart(any(UploadPartRequest.class), any(RequestBody.class)))
+                .thenThrow(S3Exception.builder().statusCode(403).message("denied").build());
+        when(s3.completeMultipartUpload(any(CompleteMultipartUploadRequest.class)))
+                .thenThrow(S3Exception.builder().statusCode(404).message("NoSuchUpload").build());
+
+        assertThrows(AccessDeniedException.class, () -> session.uploadPart(1, new byte[1], 1));
+        assertThrows(ObjectNotFoundException.class, () -> session.complete(List.of(new UploadedPart(1, "e1", null))));
     }
 
     @Test

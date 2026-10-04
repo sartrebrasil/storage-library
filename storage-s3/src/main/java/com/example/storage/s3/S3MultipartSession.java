@@ -1,7 +1,6 @@
 package com.example.storage.s3;
 
 import com.example.storage.MultipartSession;
-import com.example.storage.StorageException;
 import com.example.storage.UploadedPart;
 import software.amazon.awssdk.core.SdkPojo;
 import software.amazon.awssdk.core.exception.SdkException;
@@ -66,7 +65,7 @@ final class S3MultipartSession implements MultipartSession {
             UploadPartResponse response = s3.uploadPart(request, body);
             return new UploadedPart(partNumber, response.eTag(), checksumOf(response));
         } catch (SdkException e) {
-            throw new StorageException("Falha ao enviar parte " + partNumber + " de " + key, e);
+            throw S3ObjectStorage.translate(e, "Falha ao enviar parte " + partNumber + " de " + key);
         }
     }
 
@@ -86,7 +85,7 @@ final class S3MultipartSession implements MultipartSession {
                     .uploadId(uploadId)
                     .multipartUpload(m -> m.parts(completed)));
         } catch (SdkException e) {
-            throw new StorageException("Falha ao concluir upload de " + key, e);
+            throw S3ObjectStorage.translate(e, "Falha ao concluir upload de " + key);
         }
     }
 
@@ -97,7 +96,7 @@ final class S3MultipartSession implements MultipartSession {
         } catch (NoSuchUploadException alreadyGone) {
             // idempotente: já abortado/concluído
         } catch (SdkException e) {
-            throw new StorageException("Falha ao abortar upload de " + key, e);
+            throw S3ObjectStorage.translate(e, "Falha ao abortar upload de " + key);
         }
     }
 
@@ -112,7 +111,7 @@ final class S3MultipartSession implements MultipartSession {
         } catch (NoSuchUploadException alreadyGone) {
             return List.of();   // concluído/abortado
         } catch (SdkException e) {
-            throw new StorageException("Falha ao listar partes do upload de " + key, e);
+            throw S3ObjectStorage.translate(e, "Falha ao listar partes do upload de " + key);
         }
     }
 
@@ -136,7 +135,7 @@ final class S3MultipartSession implements MultipartSession {
             } while (Boolean.TRUE.equals(page.isTruncated()));
             return result;
         } catch (SdkException e) {
-            throw new StorageException("Falha ao listar partes concluídas de " + key, e);
+            throw S3ObjectStorage.translate(e, "Falha ao listar partes concluídas de " + key);
         }
     }
 
