@@ -137,6 +137,9 @@ ObjectStorage storage = new OciObjectStorage(objectStorageClient, namespace, "re
 ObjectStorage storage = new FileSystemObjectStorage(Path.of("/var/data/reports"));
 // SFTP: root é um caminho absoluto no servidor; o SSHClient chega já conectado/autenticado
 ObjectStorage storage = new SftpObjectStorage(sshClient, "/reports");
+// SFTP com reconexão e um limite de canais compartilhado entre os buckets do mesmo servidor
+SftpConnection connection = SftpConnection.reconnecting(() -> connectAndAuthenticate(), SftpConnection.DEFAULT_MAX_CHANNELS);
+ObjectStorage reports = new SftpObjectStorage(connection, "/reports");
 ```
 
 ```java
@@ -287,6 +290,8 @@ storage:
     root: /reports                                  # cada bucket vira uma subpasta de root
     known-hosts: /etc/ssh/known_hosts                # sem valor, tenta ~/.ssh/known_hosts
     insecure-trust-all-hosts: false                  # true pula a verificação de host key (só dev/teste)
+    keep-alive: 30s                                  # padrão; mantém a sessão ociosa viva, 0 desliga
+    max-channels: 8                                  # padrão; canais simultâneos, abaixo do MaxSessions (10 no OpenSSH)
 ```
 
 Com o Actuator no classpath, o starter registra `storageHealthIndicator` (chave `storage`

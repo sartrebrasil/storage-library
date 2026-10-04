@@ -4,6 +4,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.boot.context.properties.bind.DefaultValue;
 
 import java.net.URI;
+import java.time.Duration;
 import java.nio.file.Path;
 import java.util.Map;
 
@@ -128,10 +129,15 @@ public record StorageProperties(Provider provider,
      * @param root                  caminho absoluto no servidor; obrigatório com {@code provider: sftp}
      * @param knownHosts            arquivo {@code known_hosts} para verificar a identidade do servidor
      * @param insecureTrustAllHosts pula a verificação de host key (exposto a MITM); só dev/teste
+     * @param keepAlive             intervalo dos pacotes de keepalive, que mantêm a sessão ociosa viva em NAT e
+     *                              firewall e fazem uma conexão morta ser detectada e refeita; {@code 0} desliga
+     * @param maxChannels           canais SFTP abertos ao mesmo tempo, somando todos os buckets; abaixo do
+     *                              {@code MaxSessions} do servidor (10 no OpenSSH)
      */
     public record Sftp(String host, @DefaultValue("22") int port, String username, String password,
                        String privateKeyPath, String root, String knownHosts,
-                       @DefaultValue("false") boolean insecureTrustAllHosts) {
+                       @DefaultValue("false") boolean insecureTrustAllHosts,
+                       @DefaultValue("30s") Duration keepAlive, @DefaultValue("8") int maxChannels) {
 
         /** {@code ${VAR:}} chega como texto vazio: vazio conta como ausente. */
         public Sftp {
