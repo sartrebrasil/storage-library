@@ -13,6 +13,7 @@ import com.example.storage.PreconditionFailedException;
 import com.example.storage.PresignedRequest;
 import com.example.storage.PutOptions;
 import com.example.storage.StorageException;
+import com.example.storage.StorageStreams;
 import net.schmizz.sshj.SSHClient;
 import net.schmizz.sshj.sftp.FileAttributes;
 import net.schmizz.sshj.sftp.FileMode;
@@ -166,7 +167,7 @@ public final class SftpObjectStorage implements ObjectStorage {
             long size = file.length();
             ByteRange resolved = range.resolve(size);
             InputStream body = resolved.isAll() ? file.new RemoteFileInputStream()
-                    : new BoundedInputStream(file.new RemoteFileInputStream(resolved.offset()), resolved.length());
+                    : StorageStreams.bounded(file.new RemoteFileInputStream(resolved.offset()), resolved.length());
             return new ClosingInputStream(body, file, channel);
         } catch (IOException e) {
             closeQuietly(file);
@@ -591,41 +592,6 @@ public final class SftpObjectStorage implements ObjectStorage {
     @FunctionalInterface
     private interface SftpAction<T> {
         T run(SFTPClient sftp) throws IOException;
-    }
-
-    /** Limita a leitura a {@code remaining} bytes, sem carregar a faixa em memória. */
-    private static final class BoundedInputStream extends FilterInputStream {
-
-        private long remaining;
-
-        BoundedInputStream(InputStream in, long remaining) {
-            super(in);
-            this.remaining = remaining;
-        }
-
-        @Override
-        public int read() throws IOException {
-            if (remaining <= 0) {
-                return -1;
-            }
-            int b = super.read();
-            if (b >= 0) {
-                remaining--;
-            }
-            return b;
-        }
-
-        @Override
-        public int read(byte[] b, int off, int len) throws IOException {
-            if (remaining <= 0) {
-                return -1;
-            }
-            int n = super.read(b, off, (int) Math.min(len, remaining));
-            if (n > 0) {
-                remaining -= n;
-            }
-            return n;
-        }
     }
 
     /** Fecha o corpo, depois o {@link RemoteFile} e por fim o canal, nessa ordem. */

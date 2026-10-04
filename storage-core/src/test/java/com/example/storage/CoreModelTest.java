@@ -4,8 +4,10 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
+import java.io.ByteArrayInputStream;
 import java.io.InputStream;
 import java.time.Duration;
+import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -184,5 +186,31 @@ class CoreModelTest {
         assertThrows(IllegalArgumentException.class, () -> new PresignTtl(1, Duration.ofMinutes(2), minuto));
         assertThrows(NullPointerException.class, () -> new PresignTtl(1, null, minuto));
         assertDoesNotThrow(() -> new PresignTtl(1, minuto, minuto));
+    }
+
+    @Test
+    void contentRangeMalformadoFechaOStream() {
+        for (String header : new String[] {"bytes x-y/z", "bytes */100", "bytes 0-1/*"}) {
+            boolean[] closed = {false};
+            InputStream stream = new ByteArrayInputStream(new byte[0]) {
+                @Override
+                public void close() {
+                    closed[0] = true;
+                }
+            };
+
+            assertThrows(IllegalArgumentException.class, () -> ObjectContent.fromHttp(stream, 2, header), header);
+            assertTrue(closed[0], header);
+        }
+    }
+
+    @Test
+    void deleteResultPreservaAOrdemDasFalhas() {
+        Map<String, StorageException> failures = new java.util.LinkedHashMap<>();
+        for (String key : List.of("z", "a", "m", "b")) {
+            failures.put(key, new StorageException(key, null));
+        }
+
+        assertEquals(List.of("z", "a", "m", "b"), List.copyOf(new DeleteResult(failures).failures().keySet()));
     }
 }
