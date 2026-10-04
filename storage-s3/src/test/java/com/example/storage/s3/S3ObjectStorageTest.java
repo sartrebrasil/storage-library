@@ -192,6 +192,18 @@ class S3ObjectStorageTest {
 
     @Test
     @SuppressWarnings("unchecked")
+    void headDevolveMetadataGravadaPorOutrasFerramentas() {
+        doCallRealMethod().when(s3).headObject(any(Consumer.class));
+        when(s3.headObject(any(HeadObjectRequest.class))).thenReturn(HeadObjectResponse.builder()
+                .contentLength(1L).eTag("e").metadata(Map.of("s3cmd-attrs", "uid:0/gid:0")).build());
+
+        var info = new S3ObjectStorage(s3, mock(S3Presigner.class), "bucket").head("k").orElseThrow();
+
+        assertEquals(Map.of("s3cmd-attrs", "uid:0/gid:0"), info.metadata().userMetadata());
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
     void copiaAcimaDoLimiteUsaPartesComMetadataDaOrigem() {
         long gib = 1024L * 1024 * 1024;
         doCallRealMethod().when(s3).headObject(any(Consumer.class));

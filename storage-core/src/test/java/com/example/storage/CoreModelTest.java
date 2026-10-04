@@ -14,15 +14,30 @@ class CoreModelTest {
 
     @ParameterizedTest
     @ValueSource(strings = {"tenant-id", "Tenant", "1tenant", "tenant.id", ""})
-    void metadataRejeitaChavesNaoPortaveis(String key) {
-        assertThrows(IllegalArgumentException.class, () -> new ObjectMetadata("text/plain", null, Map.of(key, "v")));
+    void metadataRejeitaChavesNaoPortaveisNaEscrita(String key) {
+        ObjectMetadata metadata = new ObjectMetadata("text/plain", null, Map.of(key, "v"));
+
+        assertThrows(IllegalArgumentException.class, metadata::requireWritable);
+        assertThrows(IllegalArgumentException.class, () -> PutOptions.of(metadata));
     }
 
     @Test
-    void metadataAceitaChavesPortaveisERejeitaValorNaoAscii() {
-        assertDoesNotThrow(() -> new ObjectMetadata(null, null, Map.of("tenant_id", "t-1", "_x9", "")));
-        assertThrows(IllegalArgumentException.class, () -> new ObjectMetadata(null, null, Map.of("nome", "João")));
-        assertThrows(IllegalArgumentException.class, () -> new ObjectMetadata(null, null, Map.of("nome", "a\nb")));
+    void metadataAceitaChavesPortaveisERejeitaValorNaoAsciiNaEscrita() {
+        assertDoesNotThrow(() -> PutOptions.of(new ObjectMetadata(null, null, Map.of("tenant_id", "t-1", "_x9", ""))));
+        assertThrows(IllegalArgumentException.class,
+                () -> PutOptions.of(new ObjectMetadata(null, null, Map.of("nome", "João"))));
+        assertThrows(IllegalArgumentException.class,
+                () -> PutOptions.of(new ObjectMetadata(null, null, Map.of("nome", "a\nb"))));
+    }
+
+    @Test
+    void metadataLidaDoProvedorNaoEhValidada() {
+        // Gravada por outras ferramentas (gsutil, s3cmd, Storage Explorer): head precisa devolvê-la como veio.
+        Map<String, String> foreign = Map.of("goog-reserved-file-mtime", "1700000000", "Owner", "joão");
+
+        ObjectMetadata metadata = assertDoesNotThrow(() -> new ObjectMetadata("text/plain", null, foreign));
+        assertEquals(foreign, metadata.userMetadata());
+        assertDoesNotThrow(() -> metadata.withDownloadName("r.csv"));
     }
 
     @Test
