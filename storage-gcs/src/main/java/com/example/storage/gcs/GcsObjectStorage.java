@@ -178,6 +178,15 @@ public final class GcsObjectStorage implements ObjectStorage {
         }
     }
 
+    @Override
+    public boolean getLegalHold(String key) {
+        try {
+            return Boolean.TRUE.equals(blob(key).getTemporaryHold());
+        } catch (BaseServiceException e) {
+            throw translate(e, "Falha ao ler o legal hold de " + uri(key));
+        }
+    }
+
     /** Usa o hold temporário, que não impede mudar a retenção. O hold por evento não é exposto. */
     @Override
     public void setLegalHold(String key, boolean hold) {
