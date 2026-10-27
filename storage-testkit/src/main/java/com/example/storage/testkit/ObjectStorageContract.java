@@ -10,6 +10,7 @@ import com.example.storage.ObjectContent;
 import com.example.storage.ObjectInfo;
 import com.example.storage.ObjectMetadata;
 import com.example.storage.ObjectNotFoundException;
+import com.example.storage.ObjectRetainedException;
 import com.example.storage.ObjectStorage;
 import com.example.storage.ObjectSummary;
 import com.example.storage.ObjectTooLargeException;
@@ -17,6 +18,7 @@ import com.example.storage.PreconditionFailedException;
 import com.example.storage.PresignedRequest;
 import com.example.storage.PutOptions;
 import com.example.storage.RangeNotSatisfiableException;
+import com.example.storage.Retention;
 import com.example.storage.StorageException;
 import com.example.storage.UploadedPart;
 import org.junit.jupiter.api.AfterEach;
@@ -31,6 +33,7 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -65,6 +68,19 @@ public abstract class ObjectStorageContract {
 
     /** {@code false} quando o backend ignora {@code If-None-Match}/{@code If-Match} (ex.: LocalStack 3.0). */
     protected boolean supportsConditionalWrites() {
+        return true;
+    }
+
+    /**
+     * {@code true} quando o backend aplica retenção e legal hold por objeto. Os testes de retenção
+     * deixam objetos presos por alguns minutos, então use um bucket dedicado.
+     */
+    protected boolean supportsRetention() {
+        return false;
+    }
+
+    /** {@code false} quando apagar ou sobrescrever objeto retido não falha (S3 só cria delete marker e nova versão). */
+    protected boolean blocksOverwriteAndDelete() {
         return true;
     }
 
@@ -628,5 +644,88 @@ public abstract class ObjectStorageContract {
     void presignGetComNomeDeDownloadInvalidoFalhaAntesDeAssinar() {
         assertThrows(IllegalArgumentException.class,
                 () -> storage().presignGet(key("k"), Duration.ofMinutes(5), "a\"b.csv"));
+    }
+
+    private Retention governanceForMinutes(int minutes) {
+        return new Retention(Instant.now().plus(Duration.ofMinutes(minutes)), Retention.Mode.GOVERNANCE);
+    }
+
+    @Test
+    void retencaoNaEscritaImpedeSobrescreverEPodeSerLida() {
+        assumeTrue(supportsRetention(), "backend sem retenção por objeto");
+        String key = key("retido.txt");
+        Retention retention = governanceForMinutes(2);
+
+        storage().put(key, bytes("v1"), PutOptions.of("text/plain").withRetention(retention));
+
+        Retention read = storage().getRetention(key).orElseThrow();
+        assertEquals(retention.mode(), read.mode());
+        assertTrue(Math.abs(Duration.between(retention.retainUntil(), read.retainUntil()).toSeconds()) <= 1);
+        if (blocksOverwriteAndDelete()) {
+            assertThrows(ObjectRetainedException.class, () -> storage().put(key, bytes("v2"), PutOptions.of("text/plain")));
+            assertArrayEquals(bytes("v1"), read(key, ByteRange.all()));
+        }
+    }
+
+    @Test
+    void apagarObjetoRetidoFalha() {
+        assumeTrue(supportsRetention() && blocksOverwriteAndDelete(), "backend sem falha ao apagar objeto retido");
+        String key = key("retido-delete.txt");
+        storage().put(key, bytes("v1"), PutOptions.of("text/plain").withRetention(governanceForMinutes(2)));
+
+        assertThrows(ObjectRetainedException.class, () -> storage().delete(key));
+        assertTrue(storage().head(key).isPresent());
+    }
+
+    @Test
+    void setRetentionSoEstendeOPrazo() {
+        assumeTrue(supportsRetention(), "backend sem retenção por objeto");
+        String key = key("retido-extensao.txt");
+        storage().put(key, bytes("v1"), PutOptions.of("text/plain").withRetention(governanceForMinutes(2)));
+
+        Retention longer = governanceForMinutes(4);
+        storage().setRetention(key, longer);
+
+        assertTrue(storage().getRetention(key).orElseThrow().retainUntil().isAfter(governanceForMinutes(3).retainUntil()));
+        assertThrows(ObjectRetainedException.class, () -> storage().setRetention(key, governanceForMinutes(1)));
+    }
+
+    @Test
+    void legalHoldImpedeSobrescreverAteSerDesligado() {
+        assumeTrue(supportsRetention(), "backend sem retenção por objeto");
+        String key = key("hold.txt");
+        storage().put(key, bytes("v1"), PutOptions.of("text/plain").withLegalHold());
+
+        if (blocksOverwriteAndDelete()) {
+            assertThrows(ObjectRetainedException.class, () -> storage().put(key, bytes("v2"), PutOptions.of("text/plain")));
+        }
+
+        storage().setLegalHold(key, false);
+        storage().put(key, bytes("v2"), PutOptions.of("text/plain"));
+        assertArrayEquals(bytes("v2"), read(key, ByteRange.all()));
+    }
+
+    @Test
+    void multipartComRetencaoProtegeOObjetoConcluido() {
+        assumeTrue(supportsRetention(), "backend sem retenção por objeto");
+        String key = key("multipart-retido.bin");
+        MultipartSession session = storage().initiateMultipart(key, ObjectMetadata.of("application/octet-stream"),
+                governanceForMinutes(2));
+
+        session.complete(List.of(session.uploadPart(1, new byte[10], 10)));
+
+        assertTrue(storage().getRetention(key).isPresent());
+    }
+
+    @Test
+    void copyNaoHerdaARetencao() {
+        assumeTrue(supportsRetention(), "backend sem retenção por objeto");
+        String source = key("copy-origem.txt");
+        String target = key("copy-destino.txt");
+        storage().put(source, bytes("v1"), PutOptions.of("text/plain").withRetention(governanceForMinutes(2)));
+
+        storage().copy(source, target);
+
+        assertTrue(storage().getRetention(target).isEmpty());
     }
 }

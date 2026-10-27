@@ -7,11 +7,13 @@ import com.example.storage.MultipartSession;
 import com.example.storage.ObjectInfo;
 import com.example.storage.ObjectMetadata;
 import com.example.storage.ObjectNotFoundException;
+import com.example.storage.ObjectRetainedException;
 import com.example.storage.ObjectStorage;
 import com.example.storage.ObjectSummary;
 import com.example.storage.PreconditionFailedException;
 import com.example.storage.PresignedRequest;
 import com.example.storage.PutOptions;
+import com.example.storage.Retention;
 import com.example.storage.StorageException;
 import com.example.storage.UploadedPart;
 
@@ -42,7 +44,12 @@ import java.util.stream.Stream;
  */
 public final class InMemoryObjectStorage implements ObjectStorage {
 
-    private record Stored(byte[] data, ObjectMetadata metadata, String version, Instant lastModified) {
+    private record Stored(byte[] data, ObjectMetadata metadata, String version, Instant lastModified,
+                          Retention retention, boolean legalHold) {
+
+        boolean isProtected() {
+            return legalHold || (retention != null && retention.retainUntil().isAfter(Instant.now()));
+        }
     }
 
     private final ConcurrentSkipListMap<String, Stored> objects = new ConcurrentSkipListMap<>();
@@ -61,15 +68,46 @@ public final class InMemoryObjectStorage implements ObjectStorage {
             throw new StorageException("Tamanho informado (" + length + ") difere do conteúdo ("
                     + bytes.length + ") em " + key, null);
         }
-        return write(key, bytes, options.metadata(), options.condition());
+        return write(key, bytes, options.metadata(), options.condition(), options.retention(), options.legalHold());
     }
 
     @Override
     public MultipartSession initiateMultipart(String key, ObjectMetadata metadata) {
+        return initiateMultipart(key, metadata, null);
+    }
+
+    @Override
+    public MultipartSession initiateMultipart(String key, ObjectMetadata metadata, Retention retention) {
         metadata.requireWritable();
         String uploadId = UUID.randomUUID().toString();
         activeUploads.add(uploadId);
-        return new Session(key, uploadId, metadata);
+        return new Session(key, uploadId, metadata, retention);
+    }
+
+    @Override
+    public Optional<Retention> getRetention(String key) {
+        return Optional.ofNullable(require(key).retention());
+    }
+
+    /** Só estende o prazo e não rebaixa COMPLIANCE para GOVERNANCE, como o S3 em modo compliance. */
+    @Override
+    public synchronized void setRetention(String key, Retention retention) {
+        Stored current = require(key);
+        Retention old = current.retention();
+        if (old != null && old.retainUntil().isAfter(Instant.now())
+                && (retention.retainUntil().isBefore(old.retainUntil())
+                    || (old.mode() == Retention.Mode.COMPLIANCE && retention.mode() == Retention.Mode.GOVERNANCE))) {
+            throw new ObjectRetainedException("Retenção de " + key + " só pode ser estendida", null);
+        }
+        objects.put(key, new Stored(current.data(), current.metadata(), current.version(),
+                current.lastModified(), retention, current.legalHold()));
+    }
+
+    @Override
+    public synchronized void setLegalHold(String key, boolean hold) {
+        Stored current = require(key);
+        objects.put(key, new Stored(current.data(), current.metadata(), current.version(),
+                current.lastModified(), current.retention(), hold));
     }
 
     @Override
@@ -97,14 +135,18 @@ public final class InMemoryObjectStorage implements ObjectStorage {
     }
 
     @Override
-    public void delete(String key) {
+    public synchronized void delete(String key) {
+        Stored current = objects.get(key);
+        if (current != null && current.isProtected()) {
+            throw new ObjectRetainedException("Objeto sob retenção: " + key, null);
+        }
         objects.remove(key);
     }
 
     @Override
     public void copy(String sourceKey, String targetKey) {
         Stored source = require(sourceKey);
-        write(targetKey, source.data(), source.metadata(), Condition.none());
+        write(targetKey, source.data(), source.metadata(), Condition.none(), null, false);
     }
 
     @Override
@@ -134,7 +176,8 @@ public final class InMemoryObjectStorage implements ObjectStorage {
         return activeUploads.size();
     }
 
-    private synchronized String write(String key, byte[] data, ObjectMetadata metadata, Condition condition) {
+    private synchronized String write(String key, byte[] data, ObjectMetadata metadata, Condition condition,
+                                      Retention retention, boolean legalHold) {
         Stored current = objects.get(key);
         boolean satisfied = switch (condition) {
             case Condition.None none -> true;
@@ -144,8 +187,11 @@ public final class InMemoryObjectStorage implements ObjectStorage {
         if (!satisfied) {
             throw new PreconditionFailedException("Pré-condição " + condition + " falhou em " + key, null);
         }
+        if (current != null && current.isProtected()) {
+            throw new ObjectRetainedException("Objeto sob retenção: " + key, null);
+        }
         String version = "v" + versions.incrementAndGet();
-        objects.put(key, new Stored(data, metadata, version, Instant.now()));
+        objects.put(key, new Stored(data, metadata, version, Instant.now(), retention, legalHold));
         return version;
     }
 
@@ -169,10 +215,12 @@ public final class InMemoryObjectStorage implements ObjectStorage {
         private final String key;
         private final String uploadId;
         private final ObjectMetadata metadata;
+        private final Retention retention;
         private final Map<Integer, byte[]> parts = new ConcurrentHashMap<>();
 
-        Session(String key, String uploadId, ObjectMetadata metadata) {
+        Session(String key, String uploadId, ObjectMetadata metadata, Retention retention) {
             this.key = key;
+            this.retention = retention;
             this.uploadId = uploadId;
             this.metadata = metadata;
         }
@@ -211,7 +259,7 @@ public final class InMemoryObjectStorage implements ObjectStorage {
                 }
                 out.writeBytes(part);
             }
-            write(key, out.toByteArray(), metadata, Condition.none());
+            write(key, out.toByteArray(), metadata, Condition.none(), retention, false);
             activeUploads.remove(uploadId);
         }
 

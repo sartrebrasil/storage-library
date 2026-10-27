@@ -11,11 +11,13 @@ import com.example.storage.ObjectContent;
 import com.example.storage.ObjectInfo;
 import com.example.storage.ObjectMetadata;
 import com.example.storage.ObjectNotFoundException;
+import com.example.storage.ObjectRetainedException;
 import com.example.storage.ObjectStorage;
 import com.example.storage.ObjectSummary;
 import com.example.storage.PreconditionFailedException;
 import com.example.storage.PresignedRequest;
 import com.example.storage.PutOptions;
+import com.example.storage.Retention;
 import com.example.storage.StorageException;
 import com.google.auth.ServiceAccountSigner;
 import com.google.cloud.BaseServiceException;
@@ -31,6 +33,7 @@ import com.google.cloud.storage.MultipartUploadSettings;
 import com.google.cloud.storage.Storage;
 import com.google.cloud.storage.StorageBatch;
 import com.google.cloud.storage.multipartupload.model.CreateMultipartUploadRequest;
+import com.google.cloud.storage.multipartupload.model.ObjectLockMode;
 
 import java.io.FilterInputStream;
 import java.io.IOException;
@@ -39,6 +42,8 @@ import java.net.URI;
 import java.net.URISyntaxException;
 import java.nio.channels.Channels;
 import java.time.Duration;
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
 import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -61,6 +66,10 @@ import java.util.stream.StreamSupport;
  * assinatura é local; sem ela (VM, GKE workload identity) o SDK assina via IAM e a conta
  * precisa de {@code roles/iam.serviceAccountTokenCreator} sobre si mesma. Em
  * {@link #presignPut}, content-type, metadata e pré-condição são assinados.</p>
+ *
+ * <p>Retenção e legal hold exigem um bucket com a retenção por objeto habilitada. GOVERNANCE vira o
+ * modo Unlocked e COMPLIANCE o Locked; o legal hold usa o hold temporário. Apagar ou sobrescrever
+ * objeto protegido lança {@link ObjectRetainedException}.</p>
  */
 public final class GcsObjectStorage implements ObjectStorage {
 
@@ -86,11 +95,17 @@ public final class GcsObjectStorage implements ObjectStorage {
     @Override
     public String put(String key, InputStream data, long length, PutOptions options) {
         ObjectMetadata metadata = options.metadata();
-        BlobInfo info = BlobInfo.newBuilder(bucket, key)
+        BlobInfo.Builder builder = BlobInfo.newBuilder(bucket, key)
                 .setContentType(metadata.contentType())
                 .setContentDisposition(metadata.contentDisposition())
-                .setMetadata(metadata.userMetadata().isEmpty() ? null : metadata.userMetadata())
-                .build();
+                .setMetadata(metadata.userMetadata().isEmpty() ? null : metadata.userMetadata());
+        if (options.retention() != null) {
+            builder.setRetention(blobRetention(options.retention()));
+        }
+        if (options.legalHold()) {
+            builder.setTemporaryHold(true);
+        }
+        BlobInfo info = builder.build();
         Storage.BlobWriteOption[] conditions = switch (options.condition()) {
             case Condition.None none -> new Storage.BlobWriteOption[0];
             case Condition.IfNotExists ifNotExists -> new Storage.BlobWriteOption[] {Storage.BlobWriteOption.doesNotExist()};
@@ -114,20 +129,89 @@ public final class GcsObjectStorage implements ObjectStorage {
 
     @Override
     public MultipartSession initiateMultipart(String key, ObjectMetadata metadata) {
+        return initiateMultipart(key, metadata, null);
+    }
+
+    @Override
+    public MultipartSession initiateMultipart(String key, ObjectMetadata metadata, Retention retention) {
         metadata.requireWritable();
-        CreateMultipartUploadRequest request = CreateMultipartUploadRequest.builder()
+        CreateMultipartUploadRequest.Builder builder = CreateMultipartUploadRequest.builder()
                 .bucket(bucket)
                 .key(key)
                 .contentType(metadata.contentType())
                 .contentDisposition(metadata.contentDisposition())
-                .metadata(metadata.userMetadata())
-                .build();
+                .metadata(metadata.userMetadata());
+        if (retention != null) {
+            builder.objectLockMode(ObjectLockMode.valueOf(retention.mode().name()))
+                    .objectLockRetainUntilDate(retainUntil(retention));
+        }
+        CreateMultipartUploadRequest request = builder.build();
         try {
             String uploadId = multipart.createMultipartUpload(request).uploadId();
             return new GcsMultipartSession(multipart, bucket, key, uploadId);
         } catch (BaseServiceException e) {
             throw translate(e, "Falha ao iniciar upload multipart de " + uri(key));
         }
+    }
+
+    /** O bucket precisa ter a retenção por objeto habilitada. Sem retenção no objeto, devolve vazio. */
+    @Override
+    public Optional<Retention> getRetention(String key) {
+        try {
+            BlobInfo.Retention retention = blob(key).getRetention();
+            return retention == null ? Optional.empty() : Optional.of(new Retention(
+                    retention.getRetainUntilTime().toInstant(),
+                    retention.getMode() == BlobInfo.Retention.Mode.LOCKED
+                            ? Retention.Mode.COMPLIANCE : Retention.Mode.GOVERNANCE));
+        } catch (BaseServiceException e) {
+            throw translate(e, "Falha ao ler a retenção de " + uri(key));
+        }
+    }
+
+    /** Sem {@code overrideUnlockedRetention}: reduzir o prazo ou o modo é negado pelo GCS. */
+    @Override
+    public void setRetention(String key, Retention retention) {
+        try {
+            blob(key).toBuilder().setRetention(blobRetention(retention)).build().update();
+        } catch (BaseServiceException e) {
+            throw protectionFailure(e, "Falha ao definir a retenção de " + uri(key));
+        }
+    }
+
+    /** Usa o hold temporário, que não impede mudar a retenção. O hold por evento não é exposto. */
+    @Override
+    public void setLegalHold(String key, boolean hold) {
+        try {
+            blob(key).toBuilder().setTemporaryHold(hold).build().update();
+        } catch (BaseServiceException e) {
+            throw protectionFailure(e, "Falha ao alterar o legal hold de " + uri(key));
+        }
+    }
+
+    private Blob blob(String key) {
+        Blob blob = storage.get(BlobId.of(bucket, key));
+        if (blob == null) {
+            throw new ObjectNotFoundException("Objeto não encontrado: " + uri(key), null);
+        }
+        return blob;
+    }
+
+    /** GOVERNANCE vira Unlocked (o prazo pode ser reduzido com override); COMPLIANCE vira Locked. */
+    private static BlobInfo.Retention blobRetention(Retention retention) {
+        return BlobInfo.Retention.newBuilder()
+                .setMode(retention.mode() == Retention.Mode.COMPLIANCE
+                        ? BlobInfo.Retention.Mode.LOCKED : BlobInfo.Retention.Mode.UNLOCKED)
+                .setRetainUntilTime(retainUntil(retention))
+                .build();
+    }
+
+    private static OffsetDateTime retainUntil(Retention retention) {
+        return retention.retainUntil().atOffset(ZoneOffset.UTC);
+    }
+
+    private static StorageException protectionFailure(BaseServiceException e, String message) {
+        return e.getCode() == 403 ? new ObjectRetainedException(message + " (retido ou sem permissão)", e)
+                : translate(e, message);
     }
 
     @Override
@@ -334,6 +418,10 @@ public final class GcsObjectStorage implements ObjectStorage {
     }
 
     static StorageException translate(BaseServiceException e, String message) {
+        // O GCS responde 403 "cannot be deleted or overwritten" para retenção e hold ativos
+        if (e.getCode() == 403 && e.getMessage() != null && e.getMessage().contains("cannot be deleted or overwritten")) {
+            return new ObjectRetainedException(message + " (objeto sob retenção ou hold)", e);
+        }
         return StorageException.fromHttpStatus(e.getCode(), message, e);
     }
 

@@ -22,6 +22,8 @@ import java.util.stream.Stream;
  *   <li>Faixa fora do objeto lança {@link RangeNotSatisfiableException} na chamada a
  *       {@link #open} ou {@link #read}, nunca durante o consumo do stream. A faixa é
  *       cortada no fim do objeto, como no HTTP.</li>
+ *   <li>Apagar ou sobrescrever objeto sob retenção ou legal hold lança {@link ObjectRetainedException}
+ *       (no S3, apagar só cria um delete marker; a versão retida continua).</li>
  *   <li>Demais falhas lançam {@link StorageException}.</li>
  * </ul>
  */
@@ -48,7 +50,48 @@ public interface ObjectStorage {
      */
     MultipartSession initiateMultipart(String key, ObjectMetadata metadata);
 
+    /**
+     * Como {@link #initiateMultipart(String, ObjectMetadata)}, aplicando {@code retention} ao objeto
+     * no momento em que ele aparece.
+     *
+     * @throws UnsupportedOperationException provedor sem retenção por objeto
+     */
+    default MultipartSession initiateMultipart(String key, ObjectMetadata metadata, Retention retention) {
+        throw new UnsupportedOperationException(getClass().getSimpleName() + " não suporta retenção por objeto");
+    }
+
     Optional<ObjectInfo> head(String key);
+
+    /**
+     * Retenção do objeto, ou vazio se não houver.
+     *
+     * @throws ObjectNotFoundException       o objeto não existe
+     * @throws UnsupportedOperationException provedor sem retenção por objeto (OCI, filesystem, SFTP)
+     */
+    default Optional<Retention> getRetention(String key) {
+        throw new UnsupportedOperationException(getClass().getSimpleName() + " não suporta retenção por objeto");
+    }
+
+    /**
+     * Define a retenção. Só estende o prazo: reduzi-lo ou trocar COMPLIANCE por GOVERNANCE lança
+     * {@link ObjectRetainedException}.
+     *
+     * @throws ObjectNotFoundException       o objeto não existe
+     * @throws UnsupportedOperationException provedor sem retenção por objeto
+     */
+    default void setRetention(String key, Retention retention) {
+        throw new UnsupportedOperationException(getClass().getSimpleName() + " não suporta retenção por objeto");
+    }
+
+    /**
+     * Liga ou desliga o legal hold, que bloqueia apagar e sobrescrever sem prazo.
+     *
+     * @throws ObjectNotFoundException       o objeto não existe
+     * @throws UnsupportedOperationException provedor sem legal hold por objeto
+     */
+    default void setLegalHold(String key, boolean hold) {
+        throw new UnsupportedOperationException(getClass().getSimpleName() + " não suporta legal hold por objeto");
+    }
 
     /** Abre o conteúdo para leitura. O chamador deve fechar o stream. */
     InputStream open(String key, ByteRange range);

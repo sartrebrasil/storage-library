@@ -80,6 +80,10 @@ import java.util.stream.Stream;
  * destino através do cliente (dois trechos do protocolo por bloco, não uma cópia no lado do
  * servidor). {@link #presignGet}/{@link #presignPut} devolvem um {@code sftp://} informativo
  * (sem credenciais, não é utilizável sozinho): o protocolo não tem conceito de URL temporária.</p>
+ *
+ * <p>Sem retenção nem legal hold por objeto: {@code getRetention}, {@code setRetention} e
+ * {@code setLegalHold} lançam {@link UnsupportedOperationException}, porque nada aqui impediria
+ * apagar o objeto por fora da lib.</p>
  */
 public final class SftpObjectStorage implements ObjectStorage {
 

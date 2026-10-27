@@ -358,4 +358,12 @@ class OciOperationsTest {
                 () -> storage.presignGet("r.csv", Duration.ofHours(1), "a\"b.csv"), "valida antes");
         verify(client, never()).createPreauthenticatedRequest(any());
     }
+
+    @Test
+    void retencaoPorObjetoNaoEhSuportada() {
+        assertThrows(UnsupportedOperationException.class, () -> storage.getRetention("k"));
+        assertThrows(UnsupportedOperationException.class, () -> storage.setLegalHold("k", true));
+        assertThrows(UnsupportedOperationException.class, () -> storage.setRetention("k",
+                new com.example.storage.Retention(java.time.Instant.now(), com.example.storage.Retention.Mode.GOVERNANCE)));
+    }
 }
