@@ -695,12 +695,14 @@ public abstract class ObjectStorageContract {
         assumeTrue(supportsRetention(), "backend sem retenção por objeto");
         String key = key("hold.txt");
         storage().put(key, bytes("v1"), PutOptions.of("text/plain").withLegalHold());
+        assertTrue(storage().getLegalHold(key));
 
         if (blocksOverwriteAndDelete()) {
             assertThrows(ObjectRetainedException.class, () -> storage().put(key, bytes("v2"), PutOptions.of("text/plain")));
         }
 
         storage().setLegalHold(key, false);
+        assertFalse(storage().getLegalHold(key));
         storage().put(key, bytes("v2"), PutOptions.of("text/plain"));
         assertArrayEquals(bytes("v2"), read(key, ByteRange.all()));
     }
