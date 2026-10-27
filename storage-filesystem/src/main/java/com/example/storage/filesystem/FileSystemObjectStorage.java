@@ -71,8 +71,8 @@ import java.util.stream.Stream;
  * leitura que resolva, por symlink, para fora do root falha com {@link IllegalArgumentException}.
  * Pastas que ficam vazias depois de um {@code delete} são removidas.</p>
  *
- * <p>Sem retenção nem legal hold por objeto: {@code getRetention}, {@code setRetention} e
- * {@code setLegalHold} lançam {@link UnsupportedOperationException}, porque nada aqui impediria
+ * <p>Sem retenção nem legal hold por objeto: {@code getRetention}, {@code setRetention},
+ * {@code getLegalHold} e {@code setLegalHold} lançam {@link UnsupportedOperationException}, porque nada aqui impediria
  * apagar o objeto por fora da lib.</p>
  */
 public final class FileSystemObjectStorage implements ObjectStorage {

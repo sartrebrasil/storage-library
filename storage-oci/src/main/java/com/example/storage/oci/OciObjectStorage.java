@@ -72,7 +72,7 @@ import java.util.stream.StreamSupport;
  * concluir. {@link #deleteAll} usa o padrão da interface (a OCI não apaga em lote).</p>
  *
  * <p>Retenção e legal hold por objeto não existem na OCI, só regras de retenção no bucket, fora do
- * escopo da lib: {@code getRetention}, {@code setRetention} e {@code setLegalHold} lançam
+ * escopo da lib: {@code getRetention}, {@code setRetention}, {@code getLegalHold} e {@code setLegalHold} lançam
  * {@link UnsupportedOperationException}. Apagar um objeto coberto por uma regra falha como
  * {@link StorageException} genérica.</p>
  */

@@ -84,6 +84,16 @@ public interface ObjectStorage {
     }
 
     /**
+     * Se o objeto está sob legal hold.
+     *
+     * @throws ObjectNotFoundException       o objeto não existe
+     * @throws UnsupportedOperationException provedor sem legal hold por objeto
+     */
+    default boolean getLegalHold(String key) {
+        throw new UnsupportedOperationException(getClass().getSimpleName() + " não suporta legal hold por objeto");
+    }
+
+    /**
      * Liga ou desliga o legal hold, que bloqueia apagar e sobrescrever sem prazo.
      *
      * @throws ObjectNotFoundException       o objeto não existe
