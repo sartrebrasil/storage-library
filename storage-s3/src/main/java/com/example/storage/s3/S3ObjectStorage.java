@@ -212,6 +212,18 @@ public final class S3ObjectStorage implements ObjectStorage {
     }
 
     @Override
+    public boolean getLegalHold(String key) {
+        try {
+            return s3.getObjectLegalHold(b -> b.bucket(bucket).key(key)).legalHold().status() == ObjectLockLegalHoldStatus.ON;
+        } catch (SdkException e) {
+            if ("NoSuchObjectLockConfiguration".equals(errorCode(e))) {
+                return false;
+            }
+            throw protectionFailure(e, "Falha ao ler o legal hold de " + uri(key));
+        }
+    }
+
+    @Override
     public void setLegalHold(String key, boolean hold) {
         try {
             s3.putObjectLegalHold(b -> b.bucket(bucket).key(key).legalHold(l -> l.status(legalHold(hold))));
