@@ -135,6 +135,11 @@ class ObjectStorageMetrics implements DelegatingObjectStorage {
     }
 
     @Override
+    public boolean getLegalHold(String key) {
+        return timed("getLegalHold", () -> delegate.getLegalHold(key));
+    }
+
+    @Override
     public void setLegalHold(String key, boolean hold) {
         timed("setLegalHold", () -> {
             delegate.setLegalHold(key, hold);
