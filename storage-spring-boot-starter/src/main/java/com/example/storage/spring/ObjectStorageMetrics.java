@@ -11,6 +11,7 @@ import com.example.storage.ObjectNotFoundException;
 import com.example.storage.ObjectStorage;
 import com.example.storage.PresignedRequest;
 import com.example.storage.PutOptions;
+import com.example.storage.Retention;
 import com.example.storage.ObjectSummary;
 import io.micrometer.observation.Observation;
 import io.micrometer.observation.ObservationRegistry;
@@ -113,6 +114,32 @@ class ObjectStorageMetrics implements DelegatingObjectStorage {
     @Override
     public MultipartSession initiateMultipart(String key, ObjectMetadata metadata) {
         return timed("initiateMultipart", () -> delegate.initiateMultipart(key, metadata));
+    }
+
+    @Override
+    public MultipartSession initiateMultipart(String key, ObjectMetadata metadata, Retention retention) {
+        return timed("initiateMultipart", () -> delegate.initiateMultipart(key, metadata, retention));
+    }
+
+    @Override
+    public Optional<Retention> getRetention(String key) {
+        return timed("getRetention", () -> delegate.getRetention(key));
+    }
+
+    @Override
+    public void setRetention(String key, Retention retention) {
+        timed("setRetention", () -> {
+            delegate.setRetention(key, retention);
+            return null;
+        });
+    }
+
+    @Override
+    public void setLegalHold(String key, boolean hold) {
+        timed("setLegalHold", () -> {
+            delegate.setLegalHold(key, hold);
+            return null;
+        });
     }
 
     @Override
