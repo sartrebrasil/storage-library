@@ -104,6 +104,11 @@ public final class InMemoryObjectStorage implements ObjectStorage {
     }
 
     @Override
+    public boolean getLegalHold(String key) {
+        return require(key).legalHold();
+    }
+
+    @Override
     public synchronized void setLegalHold(String key, boolean hold) {
         Stored current = require(key);
         objects.put(key, new Stored(current.data(), current.metadata(), current.version(),
