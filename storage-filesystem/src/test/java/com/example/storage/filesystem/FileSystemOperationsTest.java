@@ -215,6 +215,7 @@ class FileSystemOperationsTest {
     @Test
     void retencaoPorObjetoNaoEhSuportada() {
         assertThrows(UnsupportedOperationException.class, () -> storage.getRetention("k"));
+        assertThrows(UnsupportedOperationException.class, () -> storage.getLegalHold("k"));
         assertThrows(UnsupportedOperationException.class, () -> storage.setLegalHold("k", true));
         assertThrows(UnsupportedOperationException.class, () -> storage.setRetention("k",
                 new com.example.storage.Retention(java.time.Instant.now(), com.example.storage.Retention.Mode.GOVERNANCE)));
