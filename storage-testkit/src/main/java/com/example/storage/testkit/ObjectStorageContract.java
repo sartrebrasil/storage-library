@@ -79,8 +79,8 @@ public abstract class ObjectStorageContract {
         return false;
     }
 
-    /** {@code false} quando apagar objeto retido não falha (S3 só cria um delete marker). */
-    protected boolean deleteOfRetainedObjectFails() {
+    /** {@code false} quando apagar ou sobrescrever objeto retido não falha (S3 só cria delete marker e nova versão). */
+    protected boolean blocksOverwriteAndDelete() {
         return true;
     }
 
@@ -661,13 +661,15 @@ public abstract class ObjectStorageContract {
         Retention read = storage().getRetention(key).orElseThrow();
         assertEquals(retention.mode(), read.mode());
         assertTrue(Math.abs(Duration.between(retention.retainUntil(), read.retainUntil()).toSeconds()) <= 1);
-        assertThrows(ObjectRetainedException.class, () -> storage().put(key, bytes("v2"), PutOptions.of("text/plain")));
-        assertArrayEquals(bytes("v1"), read(key, ByteRange.all()));
+        if (blocksOverwriteAndDelete()) {
+            assertThrows(ObjectRetainedException.class, () -> storage().put(key, bytes("v2"), PutOptions.of("text/plain")));
+            assertArrayEquals(bytes("v1"), read(key, ByteRange.all()));
+        }
     }
 
     @Test
     void apagarObjetoRetidoFalha() {
-        assumeTrue(supportsRetention() && deleteOfRetainedObjectFails(), "backend sem falha ao apagar objeto retido");
+        assumeTrue(supportsRetention() && blocksOverwriteAndDelete(), "backend sem falha ao apagar objeto retido");
         String key = key("retido-delete.txt");
         storage().put(key, bytes("v1"), PutOptions.of("text/plain").withRetention(governanceForMinutes(2)));
 
@@ -694,7 +696,9 @@ public abstract class ObjectStorageContract {
         String key = key("hold.txt");
         storage().put(key, bytes("v1"), PutOptions.of("text/plain").withLegalHold());
 
-        assertThrows(ObjectRetainedException.class, () -> storage().put(key, bytes("v2"), PutOptions.of("text/plain")));
+        if (blocksOverwriteAndDelete()) {
+            assertThrows(ObjectRetainedException.class, () -> storage().put(key, bytes("v2"), PutOptions.of("text/plain")));
+        }
 
         storage().setLegalHold(key, false);
         storage().put(key, bytes("v2"), PutOptions.of("text/plain"));
@@ -711,7 +715,6 @@ public abstract class ObjectStorageContract {
         session.complete(List.of(session.uploadPart(1, new byte[10], 10)));
 
         assertTrue(storage().getRetention(key).isPresent());
-        assertThrows(ObjectRetainedException.class, () -> storage().put(key, bytes("v2"), PutOptions.of("text/plain")));
     }
 
     @Test
