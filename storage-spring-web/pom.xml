@@ -15,7 +15,7 @@
   <properties>
     <module.name>com.example.storage.web</module.name>
     <!-- A do Spring Boot 3.5 do starter. A aplicação usa a do próprio BOM do Boot. -->
-    <spring-framework.version>6.2.19</spring-framework.version>
+    <spring-framework.version>7.0.9</spring-framework.version>
   </properties>
 
   <dependencies>
