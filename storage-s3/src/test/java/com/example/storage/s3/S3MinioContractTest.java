@@ -46,7 +46,7 @@ class S3MinioContractTest extends ObjectStorageContract {
         presigner = S3Presigner.builder().region(Region.US_EAST_1).endpointOverride(endpoint)
                 .serviceConfiguration(S3Configuration.builder().pathStyleAccessEnabled(true).build())
                 .credentialsProvider(credentials).build();
-        s3.createBucket(b -> b.bucket(BUCKET));
+        s3.createBucket(b -> b.bucket(BUCKET).objectLockEnabledForBucket(true));   // Object Lock liga o versionamento
         storage = new S3ObjectStorage(s3, presigner, BUCKET);
     }
 
@@ -64,5 +64,15 @@ class S3MinioContractTest extends ObjectStorageContract {
     @Override
     protected ObjectStorage storageWithMissingBucket() {
         return new S3ObjectStorage(s3, presigner, "nao-existe");
+    }
+
+    @Override
+    protected boolean supportsRetention() {
+        return true;
+    }
+
+    @Override
+    protected boolean blocksOverwriteAndDelete() {
+        return false;
     }
 }

@@ -12,11 +12,14 @@ import com.example.storage.MultipartSession;
 import com.example.storage.ObjectInfo;
 import com.example.storage.ObjectContent;
 import com.example.storage.ObjectMetadata;
+import com.example.storage.ObjectNotFoundException;
+import com.example.storage.ObjectRetainedException;
 import com.example.storage.ObjectStorage;
 import com.example.storage.ObjectSummary;
 import com.example.storage.PreconditionFailedException;
 import com.example.storage.PresignedRequest;
 import com.example.storage.PutOptions;
+import com.example.storage.Retention;
 import com.example.storage.StorageException;
 import software.amazon.awssdk.core.ResponseInputStream;
 import software.amazon.awssdk.core.exception.SdkException;
@@ -31,6 +34,9 @@ import software.amazon.awssdk.services.s3.model.GetObjectRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectResponse;
 import software.amazon.awssdk.services.s3.model.HeadObjectResponse;
 import software.amazon.awssdk.services.s3.model.ObjectIdentifier;
+import software.amazon.awssdk.services.s3.model.ObjectLockLegalHoldStatus;
+import software.amazon.awssdk.services.s3.model.ObjectLockMode;
+import software.amazon.awssdk.services.s3.model.ObjectLockRetention;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 import software.amazon.awssdk.services.s3.model.S3Error;
 import software.amazon.awssdk.services.s3.model.S3Object;
@@ -62,6 +68,10 @@ import java.util.stream.Stream;
  * <p>URLs pré-assinadas (SigV4) valem no máximo 7 dias, limitadas também pela expiração
  * das credenciais. Em {@link #presignPut}, content-type, metadata e pré-condição são
  * assinados: o upload falha se o cliente não enviar os cabeçalhos devolvidos.</p>
+ *
+ * <p>Retenção e legal hold usam o Object Lock, que exige um bucket criado com ele (e com versionamento).
+ * Com versionamento, apagar só cria um delete marker e sobrescrever cria uma versão nova: nenhum dos
+ * dois lança {@code ObjectRetainedException}, mas a versão retida continua no bucket.</p>
  */
 public final class S3ObjectStorage implements ObjectStorage {
 
@@ -145,6 +155,11 @@ public final class S3ObjectStorage implements ObjectStorage {
 
     @Override
     public MultipartSession initiateMultipart(String key, ObjectMetadata metadata) {
+        return initiateMultipart(key, metadata, null);
+    }
+
+    @Override
+    public MultipartSession initiateMultipart(String key, ObjectMetadata metadata, Retention retention) {
         metadata.requireWritable();
         CreateMultipartUploadRequest.Builder request = CreateMultipartUploadRequest.builder()
                 .bucket(bucket)
@@ -154,6 +169,9 @@ public final class S3ObjectStorage implements ObjectStorage {
                 .metadata(metadata.userMetadata())
                 // Integridade por parte; Checksum.NONE para backends compatíveis que não suportam.
                 .checksumAlgorithm(checksum);
+        if (retention != null) {
+            request.objectLockMode(lockMode(retention)).objectLockRetainUntilDate(retention.retainUntil());
+        }
         // .serverSideEncryption(ServerSideEncryption.AWS_KMS).ssekmsKeyId(...) se aplicável
 
         try {
@@ -162,6 +180,61 @@ public final class S3ObjectStorage implements ObjectStorage {
         } catch (SdkException e) {
             throw translate(e, "Falha ao iniciar upload multipart de " + uri(key));
         }
+    }
+
+    /** O bucket precisa ter sido criado com Object Lock. Sem retenção no objeto, devolve vazio. */
+    @Override
+    public Optional<Retention> getRetention(String key) {
+        try {
+            ObjectLockRetention lock = s3.getObjectRetention(b -> b.bucket(bucket).key(key)).retention();
+            return lock == null || lock.mode() == null ? Optional.empty()
+                    : Optional.of(new Retention(lock.retainUntilDate(), Retention.Mode.valueOf(lock.mode().name())));
+        } catch (SdkException e) {
+            if ("NoSuchObjectLockConfiguration".equals(errorCode(e))) {
+                return Optional.empty();
+            }
+            if (status(e) == 404 && !"NoSuchBucket".equals(errorCode(e))) {
+                throw new ObjectNotFoundException("Objeto não encontrado: " + uri(key), e);
+            }
+            throw translate(e, "Falha ao ler a retenção de " + uri(key));
+        }
+    }
+
+    /** Sem bypass de governance: reduzir o prazo ou o modo é negado pelo S3. */
+    @Override
+    public void setRetention(String key, Retention retention) {
+        try {
+            s3.putObjectRetention(b -> b.bucket(bucket).key(key).retention(r -> r
+                    .mode(retention.mode().name()).retainUntilDate(retention.retainUntil())));
+        } catch (SdkException e) {
+            throw protectionFailure(e, "Falha ao definir a retenção de " + uri(key));
+        }
+    }
+
+    @Override
+    public void setLegalHold(String key, boolean hold) {
+        try {
+            s3.putObjectLegalHold(b -> b.bucket(bucket).key(key).legalHold(l -> l.status(legalHold(hold))));
+        } catch (SdkException e) {
+            throw protectionFailure(e, "Falha ao alterar o legal hold de " + uri(key));
+        }
+    }
+
+    private static ObjectLockMode lockMode(Retention retention) {
+        return ObjectLockMode.fromValue(retention.mode().name());
+    }
+
+    private static ObjectLockLegalHoldStatus legalHold(boolean hold) {
+        return hold ? ObjectLockLegalHoldStatus.ON : ObjectLockLegalHoldStatus.OFF;
+    }
+
+    private static StorageException protectionFailure(SdkException e, String message) {
+        if (status(e) == 404 && !"NoSuchBucket".equals(errorCode(e))) {
+            return new ObjectNotFoundException(message + " (objeto não encontrado)", e);
+        }
+        // O S3 não distingue "retido" de "sem permissão": ambos são 403 AccessDenied
+        return status(e) == 403 ? new ObjectRetainedException(message + " (retido ou sem permissão)", e)
+                : translate(e, message);
     }
 
     @Override
@@ -347,6 +420,12 @@ public final class S3ObjectStorage implements ObjectStorage {
             case Condition.None none -> { }
             case Condition.IfNotExists ifNotExists -> request.ifNoneMatch("*");
             case Condition.IfVersionMatches match -> request.ifMatch(match.version());
+        }
+        if (options.retention() != null) {
+            request.objectLockMode(lockMode(options.retention())).objectLockRetainUntilDate(options.retention().retainUntil());
+        }
+        if (options.legalHold()) {
+            request.objectLockLegalHoldStatus(ObjectLockLegalHoldStatus.ON);
         }
         return request;
     }
