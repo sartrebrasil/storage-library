@@ -21,7 +21,7 @@ import org.springframework.context.annotation.Configuration;
 // Depois da ObservationAutoConfiguration do Actuator (pelo nome: o Actuator é opcional), senão a ordem
 // alfabética avalia o @ConditionalOnBean abaixo antes de o ObservationRegistry existir.
 @AutoConfiguration(after = StorageAutoConfiguration.class,
-        afterName = "org.springframework.boot.actuate.autoconfigure.observation.ObservationAutoConfiguration")
+        afterName = "org.springframework.boot.micrometer.observation.autoconfigure.ObservationAutoConfiguration")
 @ConditionalOnClass(ObservationRegistry.class)
 public class StorageMetricsAutoConfiguration {
 

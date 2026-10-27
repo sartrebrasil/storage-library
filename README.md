@@ -19,7 +19,7 @@ multipart em streaming (sem manter o arquivo inteiro em memória ou em disco).
 | `storage-oci` | Adapter OCI Object Storage. |
 | `storage-filesystem` | Adapter sobre filesystem local (`java.nio.file`), sem SDK de nuvem. |
 | `storage-sftp` | Adapter sobre SFTP (sshj), para servidores que só falam SSH. |
-| `storage-spring-boot-starter` | Auto-configuração Spring Boot 3.5 por properties (`storage.*`). |
+| `storage-spring-boot-starter` | Auto-configuração Spring Boot 4.1 por properties (`storage.*`). |
 | `storage-spring-web` | Download por Spring MVC (`ObjectResponses`, `StreamLimiter`). Só `spring-web`, sem autoconfigure. |
 | `storage-bom` | Alinha as versões dos módulos acima. |
 
