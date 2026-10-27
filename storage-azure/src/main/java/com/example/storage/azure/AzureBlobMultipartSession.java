@@ -5,6 +5,7 @@ import com.azure.core.util.BinaryData;
 import com.azure.core.util.Context;
 import com.azure.storage.blob.models.BlobErrorCode;
 import com.azure.storage.blob.models.BlobHttpHeaders;
+import com.azure.storage.blob.models.BlobImmutabilityPolicy;
 import com.azure.storage.blob.models.BlobStorageException;
 import com.azure.storage.blob.models.Block;
 import com.azure.storage.blob.models.BlockList;
@@ -33,8 +34,11 @@ final class AzureBlobMultipartSession implements MultipartSession {
     private final String key;
     private final String uploadId;
     private final ObjectMetadata metadata;
+    private final BlobImmutabilityPolicy policy;
 
-    AzureBlobMultipartSession(BlockBlobClient blob, String key, String uploadId, ObjectMetadata metadata) {
+    AzureBlobMultipartSession(BlockBlobClient blob, String key, String uploadId, ObjectMetadata metadata,
+                              BlobImmutabilityPolicy policy) {
+        this.policy = policy;
         this.blob = blob;
         this.key = key;
         this.uploadId = uploadId;
@@ -85,7 +89,8 @@ final class AzureBlobMultipartSession implements MultipartSession {
                 .setHeaders(new BlobHttpHeaders()
                         .setContentType(metadata.contentType())
                         .setContentDisposition(metadata.contentDisposition()))
-                .setMetadata(metadata.userMetadata());
+                .setMetadata(metadata.userMetadata())
+                .setImmutabilityPolicy(policy);
         try {
             blob.commitBlockListWithResponse(options, null, Context.NONE);
         } catch (BlobStorageException e) {

@@ -9,6 +9,8 @@ import com.azure.storage.blob.BlobContainerClient;
 import com.azure.storage.blob.models.BlobCopyInfo;
 import com.azure.storage.blob.models.BlobErrorCode;
 import com.azure.storage.blob.models.BlobHttpHeaders;
+import com.azure.storage.blob.models.BlobImmutabilityPolicy;
+import com.azure.storage.blob.models.BlobImmutabilityPolicyMode;
 import com.azure.storage.blob.models.BlobItem;
 import com.azure.storage.blob.models.BlobProperties;
 import com.azure.storage.blob.models.BlobRange;
@@ -30,12 +32,15 @@ import com.example.storage.MultipartSession;
 import com.example.storage.ObjectContent;
 import com.example.storage.ObjectInfo;
 import com.example.storage.ObjectMetadata;
+import com.example.storage.ObjectNotFoundException;
+import com.example.storage.ObjectRetainedException;
 import com.example.storage.ObjectStorage;
 import com.example.storage.ObjectSummary;
 import com.example.storage.PreconditionFailedException;
 import com.example.storage.PresignedRequest;
 import com.example.storage.PutOptions;
 import com.example.storage.RangeNotSatisfiableException;
+import com.example.storage.Retention;
 import com.example.storage.StorageException;
 
 import java.io.IOException;
@@ -43,7 +48,9 @@ import java.io.InputStream;
 import java.net.URI;
 import java.time.Clock;
 import java.time.Duration;
+import java.time.Instant;
 import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
@@ -73,6 +80,11 @@ import java.util.stream.Stream;
  * <p>Uploads multipart ao mesmo blob não são independentes como no S3, GCS e OCI: o commit de um
  * deles (ou um {@link #put} na mesma chave) descarta os blocos ainda não commitados dos outros, que
  * falham no {@link MultipartSession#complete} com {@code InvalidBlockList}.</p>
+ *
+ * <p>Retenção e legal hold usam a imutabilidade por versão, que exige versionamento na conta e a
+ * imutabilidade por versão habilitada no container. GOVERNANCE vira a política Unlocked e COMPLIANCE a
+ * Locked. Apagar ou sobrescrever blob protegido lança {@link ObjectRetainedException}. O emulador
+ * Azurite não suporta imutabilidade.</p>
  */
 public final class AzureBlobObjectStorage implements ObjectStorage {
 
@@ -108,6 +120,12 @@ public final class AzureBlobObjectStorage implements ObjectStorage {
                 .setHeaders(headers(metadata))
                 .setMetadata(metadata.userMetadata())
                 .setRequestConditions(conditions(options.condition()));
+        if (options.retention() != null) {
+            upload.setImmutabilityPolicy(policy(options.retention()));
+        }
+        if (options.legalHold()) {
+            upload.setLegalHold(true);
+        }
         try {
             return blob(key).getBlockBlobClient().uploadWithResponse(upload, null, Context.NONE).getValue().getETag();
         } catch (AzureException e) {
@@ -120,9 +138,74 @@ public final class AzureBlobObjectStorage implements ObjectStorage {
 
     @Override
     public MultipartSession initiateMultipart(String key, ObjectMetadata metadata) {
+        return initiateMultipart(key, metadata, null);
+    }
+
+    @Override
+    public MultipartSession initiateMultipart(String key, ObjectMetadata metadata, Retention retention) {
         metadata.requireWritable();
         return new AzureBlobMultipartSession(blob(key).getBlockBlobClient(),
-                key, UUID.randomUUID().toString(), metadata);
+                key, UUID.randomUUID().toString(), metadata, retention == null ? null : policy(retention));
+    }
+
+    @Override
+    public Optional<Retention> getRetention(String key) {
+        try {
+            return retention(blob(key).getProperties().getImmutabilityPolicy());
+        } catch (AzureException e) {
+            throw protectionFailure(e, "Falha ao ler a retenção de " + key);
+        }
+    }
+
+    /** Só estende o prazo: o Azure aceitaria reduzir uma política Unlocked, então a checagem é local. */
+    @Override
+    public void setRetention(String key, Retention retention) {
+        try {
+            BlobClient blob = blob(key);
+            Optional<Retention> current = retention(blob.getProperties().getImmutabilityPolicy());
+            if (current.isPresent() && current.get().retainUntil().isAfter(Instant.now(clock))
+                    && (retention.retainUntil().isBefore(current.get().retainUntil())
+                        || (current.get().mode() == Retention.Mode.COMPLIANCE
+                            && retention.mode() == Retention.Mode.GOVERNANCE))) {
+                throw new ObjectRetainedException("Retenção de " + key + " só pode ser estendida", null);
+            }
+            blob.setImmutabilityPolicy(policy(retention));
+        } catch (AzureException e) {
+            throw protectionFailure(e, "Falha ao definir a retenção de " + key);
+        }
+    }
+
+    @Override
+    public void setLegalHold(String key, boolean hold) {
+        try {
+            blob(key).setLegalHold(hold);
+        } catch (AzureException e) {
+            throw protectionFailure(e, "Falha ao alterar o legal hold de " + key);
+        }
+    }
+
+    static BlobImmutabilityPolicy policy(Retention retention) {
+        return new BlobImmutabilityPolicy()
+                .setPolicyMode(retention.mode() == Retention.Mode.COMPLIANCE
+                        ? BlobImmutabilityPolicyMode.LOCKED : BlobImmutabilityPolicyMode.UNLOCKED)
+                .setExpiryTime(retention.retainUntil().atOffset(ZoneOffset.UTC));
+    }
+
+    private static Optional<Retention> retention(BlobImmutabilityPolicy policy) {
+        if (policy == null || policy.getExpiryTime() == null || policy.getPolicyMode() == null
+                || policy.getPolicyMode() == BlobImmutabilityPolicyMode.MUTABLE) {
+            return Optional.empty();
+        }
+        return Optional.of(new Retention(policy.getExpiryTime().toInstant(),
+                policy.getPolicyMode() == BlobImmutabilityPolicyMode.LOCKED
+                        ? Retention.Mode.COMPLIANCE : Retention.Mode.GOVERNANCE));
+    }
+
+    private static StorageException protectionFailure(AzureException e, String message) {
+        if (e instanceof BlobStorageException b && b.getStatusCode() == 404 && !containerMissing(e)) {
+            return new ObjectNotFoundException(message + " (blob não encontrado)", e);
+        }
+        return translate(e, message);
     }
 
     @Override
@@ -393,6 +476,11 @@ public final class AzureBlobObjectStorage implements ObjectStorage {
             // If-None-Match: * num blob existente responde 409, não 412
             if (BlobErrorCode.BLOB_ALREADY_EXISTS.equals(b.getErrorCode())) {
                 return new PreconditionFailedException(message, e);
+            }
+            // Apagar ou sobrescrever blob com política de imutabilidade ou legal hold responde 409
+            if (BlobErrorCode.BLOB_IMMUTABLE_DUE_TO_POLICY.equals(b.getErrorCode())
+                    || (b.getErrorCode() != null && b.getErrorCode().toString().contains("Immutable"))) {
+                return new ObjectRetainedException(message + " (blob sob retenção ou legal hold)", e);
             }
             return StorageException.fromHttpStatus(b.getStatusCode(), message, e);
         }
