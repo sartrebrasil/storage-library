@@ -16,4 +16,9 @@ class InMemoryObjectStorageContractTest extends ObjectStorageContract {
     protected boolean supportsHttpPresign() {
         return false;
     }
+
+    @Override
+    protected boolean supportsRetention() {
+        return true;
+    }
 }
