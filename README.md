@@ -75,6 +75,8 @@ Instala os artefatos em `~/.m2`. Para usar em outro projeto:
 | Escrita condicional | `PutOptions.ifNotExists()`, `.ifVersionMatches(v)` | Falha com `PreconditionFailedException`. |
 | URL de download | `presignGet(key, ttl)` | `PresignTtl(bytesPorSegundo, min, max).forSize(tamanho)` calcula um TTL proporcional ao tamanho. |
 | URL de download com nome | `presignGet(key, ttl, downloadName)` | A resposta vem com `Content-Disposition: attachment; filename="…"`, qualquer que seja a chave. OCI, filesystem e SFTP lançam `UnsupportedOperationException`: grave o nome no upload com `ObjectMetadata.withDownloadName`. |
+| Retenção | `PutOptions.withRetention(new Retention(até, GOVERNANCE\|COMPLIANCE))`, `initiateMultipart(key, metadata, retention)`, `getRetention`, `setRetention` | Impede apagar e sobrescrever até a data; `setRetention` só estende o prazo. Falha com `ObjectRetainedException`. Veja [Retenção](#retenção). |
+| Legal hold | `PutOptions.withLegalHold()`, `setLegalHold(key, bool)` | Bloqueia apagar e sobrescrever sem prazo, até ser desligado. |
 | URL de upload | `presignPut(key, ttl, options)` | Devolve método, URL e cabeçalhos que o cliente deve enviar. |
 | Acesso ao bucket | `checkAccess()` | Falha se o bucket não existe ou as credenciais não alcançam. Base do health check. |
 
@@ -100,6 +102,24 @@ por outras ferramentas, e regravá-la fora da regra falha com `IllegalArgumentEx
 | Multipart concorrente na mesma chave | Independentes | Independentes | O commit de um descarta os blocos dos outros (`InvalidBlockList`) | Independentes |
 | Chamadas em `read` com faixa | 1 | 2 (metadados + leitura) | 1; sufixo: 2 | 1 |
 | `checkAccess` / permissão exigida | HeadBucket / `s3:ListBucket` | Lista 1 objeto / `storage.objects.list` | Container exists / leitura de propriedades do container | HeadBucket / `BUCKET_INSPECT` |
+
+### Retenção
+
+Só S3, GCS e Azure protegem objetos por chave; OCI, filesystem e SFTP lançam
+`UnsupportedOperationException` (a OCI só tem regras de retenção no bucket, fora da lib). O bucket
+precisa estar preparado, e a lib não o configura:
+
+| | S3 | GCS | Azure |
+|---|---|---|---|
+| Pré-requisito | Bucket criado com Object Lock (liga o versionamento) | Retenção por objeto habilitada no bucket | Versionamento na conta e imutabilidade por versão no container |
+| `GOVERNANCE` / `COMPLIANCE` | Governance / Compliance | Unlocked / Locked | Política Unlocked / Locked |
+| Legal hold | Legal hold | Hold temporário | Legal hold |
+| Apagar ou sobrescrever objeto protegido | **Não falha**: cria um delete marker ou uma versão nova, e a versão retida continua no bucket | `ObjectRetainedException` (403) | `ObjectRetainedException` (409) |
+| Reduzir o prazo com `setRetention` | `ObjectRetainedException` (403; o S3 não distingue de falta de permissão) | `ObjectRetainedException` (403) | `ObjectRetainedException` (checagem local) |
+
+`copy` não herda a retenção: o destino recebe só a retenção padrão do bucket. `COMPLIANCE` não pode ser
+removido nem pela conta root até a data, então teste com `GOVERNANCE` e prazos curtos. O Azurite não
+suporta imutabilidade.
 
 ### S3 compatível: checksum
 
@@ -370,4 +390,10 @@ OCI não têm emulador compatível: são cobertos por testes com mocks e assinat
 contrato opt-in contra bucket real (`GcsBucketContractTest` com `STORAGE_GCS_BUCKET` e as Application
 Default Credentials; `OciBucketContractTest` com `STORAGE_OCI_BUCKET` e o `~/.oci/config`, perfil em
 `STORAGE_OCI_PROFILE`). Sem as variáveis, esses contratos aparecem como pulados. Todo contrato apaga os
-objetos que criou.
+objetos que criou, exceto os de retenção, que ficam presos por alguns minutos.
+
+Os testes de retenção (`supportsRetention()` no contrato) rodam no `InMemoryObjectStorage`, no MinIO
+com bucket com Object Lock e, opt-in, em buckets reais: `GcsRetentionContractTest`
+(`STORAGE_GCS_RETENTION_BUCKET`) e `AzureImmutableContainerContractTest`
+(`STORAGE_AZURE_IMMUTABLE_CONNECTION_STRING` e `STORAGE_AZURE_IMMUTABLE_CONTAINER`). Use buckets
+dedicados, com limpeza por lifecycle.
