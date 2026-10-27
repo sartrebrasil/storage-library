@@ -1,8 +1,8 @@
 package com.example.storage.spring;
 
 import com.example.storage.ObjectStorage;
-import org.springframework.boot.actuate.health.AbstractHealthIndicator;
-import org.springframework.boot.actuate.health.Health;
+import org.springframework.boot.health.contributor.AbstractHealthIndicator;
+import org.springframework.boot.health.contributor.Health;
 
 /**
  * {@code UP} quando {@link ObjectStorage#checkAccess()} passa. Qualquer falha vira {@code DOWN}
