@@ -70,6 +70,11 @@ import java.util.stream.StreamSupport;
  *
  * <p>{@link #copy} é assíncrona na OCI: a implementação acompanha a work request até
  * concluir. {@link #deleteAll} usa o padrão da interface (a OCI não apaga em lote).</p>
+ *
+ * <p>Retenção e legal hold por objeto não existem na OCI, só regras de retenção no bucket, fora do
+ * escopo da lib: {@code getRetention}, {@code setRetention} e {@code setLegalHold} lançam
+ * {@link UnsupportedOperationException}. Apagar um objeto coberto por uma regra falha como
+ * {@link StorageException} genérica.</p>
  */
 public final class OciObjectStorage implements ObjectStorage {
 
