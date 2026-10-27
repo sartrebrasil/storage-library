@@ -176,6 +176,15 @@ public final class AzureBlobObjectStorage implements ObjectStorage {
     }
 
     @Override
+    public boolean getLegalHold(String key) {
+        try {
+            return Boolean.TRUE.equals(blob(key).getProperties().hasLegalHold());
+        } catch (AzureException e) {
+            throw protectionFailure(e, "Falha ao ler o legal hold de " + key);
+        }
+    }
+
+    @Override
     public void setLegalHold(String key, boolean hold) {
         try {
             blob(key).setLegalHold(hold);
