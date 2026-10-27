@@ -10,14 +10,14 @@
   </parent>
   <artifactId>storage-spring-boot-starter</artifactId>
   <name>storage-spring-boot-starter</name>
-  <description>Auto-configuração Spring Boot 3.5 do ObjectStorage por properties (storage.*)</description>
+  <description>Auto-configuração Spring Boot 4.1 do ObjectStorage por properties (storage.*)</description>
 
   <properties>
     <module.name>com.example.storage.spring</module.name>
     <!-- Versões explícitas em vez do BOM do Boot: importá-lo aqui mudaria as versões de
          JUnit/Mockito/Jackson só neste módulo. A aplicação usa o BOM da própria versão do Boot. -->
-    <spring-boot.version>3.5.16</spring-boot.version>
-    <micrometer.version>1.15.12</micrometer.version>
+    <spring-boot.version>4.1.1</spring-boot.version>
+    <micrometer.version>1.17.1</micrometer.version>
     <assertj.version>3.27.7</assertj.version>
   </properties>
 
@@ -73,19 +73,7 @@
          Jackson delas rebaixaria o dos SDKs, e a aplicação traz o próprio Actuator. -->
     <dependency>
       <groupId>org.springframework.boot</groupId>
-      <artifactId>spring-boot-actuator-autoconfigure</artifactId>
-      <version>${spring-boot.version}</version>
-      <optional>true</optional>
-      <exclusions>
-        <exclusion>
-          <groupId>*</groupId>
-          <artifactId>*</artifactId>
-        </exclusion>
-      </exclusions>
-    </dependency>
-    <dependency>
-      <groupId>org.springframework.boot</groupId>
-      <artifactId>spring-boot-actuator</artifactId>
+      <artifactId>spring-boot-health</artifactId>
       <version>${spring-boot.version}</version>
       <optional>true</optional>
       <exclusions>
@@ -102,6 +90,19 @@
       <artifactId>micrometer-observation</artifactId>
       <version>${micrometer.version}</version>
       <optional>true</optional>
+    </dependency>
+    <!-- Testes: as auto-configurações de métricas e de observação, que no Boot 4 são módulos próprios -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-micrometer-metrics</artifactId>
+      <version>${spring-boot.version}</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-micrometer-observation</artifactId>
+      <version>${spring-boot.version}</version>
+      <scope>test</scope>
     </dependency>
     <!-- Testes: DefaultMeterObservationHandler, SimpleMeterRegistry e as auto-configurações de métricas -->
     <dependency>
