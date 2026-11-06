@@ -245,8 +245,15 @@ public final class S3ObjectStorage implements ObjectStorage {
             return new ObjectNotFoundException(message + " (objeto não encontrado)", e);
         }
         // O S3 não distingue "retido" de "sem permissão": ambos são 403 AccessDenied
-        return status(e) == 403 ? new ObjectRetainedException(message + " (retido ou sem permissão)", e)
-                : translate(e, message);
+        if (status(e) == 403) {
+            return new ObjectRetainedException(message + " (retido ou sem permissão)", e);
+        }
+        // MinIO responde 400 InvalidRequest "Object is WORM protected" em vez de 403
+        if (status(e) == 400 && "InvalidRequest".equals(errorCode(e)) && e.getMessage() != null
+                && e.getMessage().contains("WORM protected")) {
+            return new ObjectRetainedException(message + " (retido)", e);
+        }
+        return translate(e, message);
     }
 
     @Override
