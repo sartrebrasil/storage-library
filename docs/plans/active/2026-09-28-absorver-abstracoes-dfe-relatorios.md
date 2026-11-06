@@ -100,11 +100,11 @@ groupId `com.example`. O texto abaixo fica como referência para quando for adot
 **B5. Versão do AWS SDK.** A lib compila contra `2.55.6`; o consumidor fixa `2.31.78` no
 BOM dele, e esse BOM prevalece.
 
-- Levantar as APIs do SDK que o `storage-s3` usa e confirmar que existem em `2.31.78`
+- Levantar as APIs do SDK que o `storage-aws` usa e confirmar que existem em `2.31.78`
   (`ChecksumAlgorithm`, `UploadPartResponse.checksumCRC32()`, `forcePathStyle`,
   `NoSuchUploadException`, `presignPutObject(Consumer)`).
-- Verificado em G0: os testes do `storage-s3` passam com `2.31.78` (ver registro).
-  Falta só fixar isso no CI: um job que roda `mvn -pl storage-s3 -am test
+- Verificado em G0: os testes do `storage-aws` passam com `2.31.78` (ver registro).
+  Falta só fixar isso no CI: um job que roda `mvn -pl storage-aws -am test
   -Daws.sdk.version=2.31.78`.
 - Documentar no README a versão mínima suportada de cada SDK.
 - 30/09/2026: `S3ObjectStorage.Checksum` (commit `605ac96`) referenciava `ChecksumAlgorithm.SHA512`,
@@ -115,7 +115,7 @@ BOM dele, e esse BOM prevalece.
   `2.31.78`. Em runtime isso só quebra com esses algoritmos, mas o job precisa rodar o jar compilado
   contra `2.55.6` com o SDK antigo no classpath, não recompilar.
 
-**Pronto quando:** o artefato é resolvido pelo pipeline do consumidor, e o `storage-s3`
+**Pronto quando:** o artefato é resolvido pelo pipeline do consumidor, e o `storage-aws`
 passa nos testes com a versão mínima declarada.
 
 ---
@@ -685,7 +685,7 @@ Verificação feita em 28/09/2026 sobre o commit `cfbc0cf`.
 | B2 | Confirmado | `MultipartOutputStream.close()` chama `abort()` quando o estado é `OPEN`; não há visão que ignore `close()`. |
 | B3 | Confirmado | O construtor de `MultipartConfig` rejeita `maxInFlight < 1` e exige `executor` não nulo. |
 | B4 | Confirmado | GroupId `com.example`, sem `distributionManagement`; o remoto é `github.com/sartrebrasil/storage-library`. |
-| B5 | Ajustado: não bloqueia | `mvn -o -pl storage-s3 -am -Daws.sdk.version=2.31.78 test`: 26 testes verdes (`S3ObjectStorageTest` 7, `S3MinioContractTest` 19), com `dependency:list` confirmando `s3` e `sdk-core` em 2.31.78. Resta só o job de CI. |
+| B5 | Ajustado: não bloqueia | `mvn -o -pl storage-aws -am -Daws.sdk.version=2.31.78 test`: 26 testes verdes (`S3ObjectStorageTest` 7, `S3MinioContractTest` 19), com `dependency:list` confirmando `s3` e `sdk-core` em 2.31.78. Resta só o job de CI. |
 | L2 | Confirmado | Nenhum limite de tamanho no core nem nos adapters. |
 | L3 | Confirmado | `ChecksumAlgorithm.CRC32` fixo em `put`, `initiateMultipart` e `S3MultipartSession.uploadPart`; o starter não expõe opção. |
 | L4 | Confirmado | Os quatro adapters obtêm tamanho e faixa numa chamada só: S3/OCI pela resposta do `getObject`, GCS pelo `Blob` que `open` já busca, Azure pelas propriedades do `BlobInputStream`. |
