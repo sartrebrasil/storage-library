@@ -25,12 +25,12 @@
       </dependency>
       <dependency>
         <groupId>com.example</groupId>
-        <artifactId>storage-s3</artifactId>
+        <artifactId>storage-aws</artifactId>
         <version>${project.version}</version>
       </dependency>
       <dependency>
         <groupId>com.example</groupId>
-        <artifactId>storage-gcs</artifactId>
+        <artifactId>storage-gcp</artifactId>
         <version>${project.version}</version>
       </dependency>
       <dependency>
