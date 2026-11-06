@@ -1,0 +1,78 @@
+package com.example.storage.aws;
+
+import com.example.storage.ObjectStorage;
+import com.example.storage.testkit.ObjectStorageContract;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.testcontainers.containers.GenericContainer;
+import org.testcontainers.containers.wait.strategy.Wait;
+import org.testcontainers.junit.jupiter.Container;
+import org.testcontainers.junit.jupiter.Testcontainers;
+import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
+import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
+import software.amazon.awssdk.regions.Region;
+import software.amazon.awssdk.services.s3.S3Client;
+import software.amazon.awssdk.services.s3.S3Configuration;
+import software.amazon.awssdk.services.s3.presigner.S3Presigner;
+
+import java.net.URI;
+
+/** Contrato contra um MinIO real. Pulado quando não há Docker. */
+@Testcontainers(disabledWithoutDocker = true)
+class S3MinioContractTest extends ObjectStorageContract {
+
+    private static final String BUCKET = "contract";
+
+    // MinIO RELEASE.2025-09-07T16-13-09Z, fixado por digest para o build não mudar sozinho; atualize de propósito.
+    @Container
+    private static final GenericContainer<?> MINIO = new GenericContainer<>(
+            "minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e")
+            .withCommand("server", "/data")
+            .withEnv("MINIO_ROOT_USER", "minioadmin")
+            .withEnv("MINIO_ROOT_PASSWORD", "minioadmin")
+            .withExposedPorts(9000)
+            .waitingFor(Wait.forHttp("/minio/health/ready").forPort(9000));
+
+    private static S3Client s3;
+    private static S3Presigner presigner;
+    private static S3ObjectStorage storage;
+
+    @BeforeAll
+    static void setUp() {
+        URI endpoint = URI.create("http://" + MINIO.getHost() + ":" + MINIO.getMappedPort(9000));
+        var credentials = StaticCredentialsProvider.create(AwsBasicCredentials.create("minioadmin", "minioadmin"));
+        s3 = S3Client.builder().region(Region.US_EAST_1).endpointOverride(endpoint).forcePathStyle(true)
+                .credentialsProvider(credentials).build();
+        presigner = S3Presigner.builder().region(Region.US_EAST_1).endpointOverride(endpoint)
+                .serviceConfiguration(S3Configuration.builder().pathStyleAccessEnabled(true).build())
+                .credentialsProvider(credentials).build();
+        s3.createBucket(b -> b.bucket(BUCKET).objectLockEnabledForBucket(true));   // Object Lock liga o versionamento
+        storage = new S3ObjectStorage(s3, presigner, BUCKET);
+    }
+
+    @AfterAll
+    static void tearDown() {
+        presigner.close();
+        s3.close();
+    }
+
+    @Override
+    protected ObjectStorage storage() {
+        return storage;
+    }
+
+    @Override
+    protected ObjectStorage storageWithMissingBucket() {
+        return new S3ObjectStorage(s3, presigner, "nao-existe");
+    }
+
+    @Override
+    protected boolean supportsRetention() {
+        return true;
+    }
+
+    @Override
+    protected boolean blocksOverwriteAndDelete() {
+        return false;
+    }
+}

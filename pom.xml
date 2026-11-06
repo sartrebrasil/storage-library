@@ -14,8 +14,8 @@
     <module>storage-bom</module>
     <module>storage-core</module>
     <module>storage-testkit</module>
-    <module>storage-s3</module>
-    <module>storage-gcs</module>
+    <module>storage-aws</module>
+    <module>storage-gcp</module>
     <module>storage-azure</module>
     <module>storage-oci</module>
     <module>storage-filesystem</module>
