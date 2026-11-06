@@ -139,14 +139,20 @@ class StorageAutoConfigurationTest {
 
     @Test
     void s3ComChavesVaziasUsaCadeiaPadrao() {
-        // o que chega de "access-key: ${REPORT_CREDENTIALS_ACCESS_KEY:}" sem a variável
-        runner.withPropertyValues("storage.provider=s3", "storage.bucket=reports", "storage.s3.region=",
-                        "storage.s3.access-key=", "storage.s3.secret-key=")
-                .run(context -> {
-                    assertThat(context).hasNotFailed();
-                    assertThat(context.getBean(AwsCredentialsProvider.class)).isInstanceOf(DefaultCredentialsProvider.class);
-                    assertThat(context.getBean(StorageProperties.class).s3().region()).isNull();
-                });
+        // o que chega de "access-key: ${REPORT_CREDENTIALS_ACCESS_KEY:}" sem a variável.
+        // Sem região no starter, o SDK a resolve pela cadeia padrão; aws.region isola o teste do ambiente.
+        System.setProperty("aws.region", "us-east-1");
+        try {
+            runner.withPropertyValues("storage.provider=s3", "storage.bucket=reports", "storage.s3.region=",
+                            "storage.s3.access-key=", "storage.s3.secret-key=")
+                    .run(context -> {
+                        assertThat(context).hasNotFailed();
+                        assertThat(context.getBean(AwsCredentialsProvider.class)).isInstanceOf(DefaultCredentialsProvider.class);
+                        assertThat(context.getBean(StorageProperties.class).s3().region()).isNull();
+                    });
+        } finally {
+            System.clearProperty("aws.region");
+        }
     }
 
     @Test
