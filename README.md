@@ -13,8 +13,8 @@ multipart em streaming (sem manter o arquivo inteiro em memória ou em disco).
 |---|---|
 | `storage-core` | `ObjectStorage`, `MultipartSession`, modelos, exceções, `MultipartOutputStream`. Somente JDK. |
 | `storage-testkit` | `InMemoryObjectStorage` e `ObjectStorageContract` (testes de contrato para implementações). |
-| `storage-s3` | Adapter AWS S3 (SDK v2). Funciona com MinIO/LocalStack. |
-| `storage-gcs` | Adapter Google Cloud Storage (multipart da XML API). |
+| `storage-aws` | Adapter AWS S3 (SDK v2). Funciona com MinIO/LocalStack. |
+| `storage-gcp` | Adapter Google Cloud Storage (multipart da XML API). |
 | `storage-azure` | Adapter Azure Blob Storage (block blobs). |
 | `storage-oci` | Adapter OCI Object Storage. |
 | `storage-filesystem` | Adapter sobre filesystem local (`java.nio.file`), sem SDK de nuvem. |
@@ -49,7 +49,7 @@ Instala os artefatos em `~/.m2`. Para usar em outro projeto:
 <dependencies>
   <dependency>
     <groupId>com.example</groupId>
-    <artifactId>storage-s3</artifactId>
+    <artifactId>storage-aws</artifactId>
   </dependency>
   <dependency>
     <groupId>com.example</groupId>
@@ -278,7 +278,7 @@ Adicione o starter e o adapter do provedor:
 </dependency>
 <dependency>
   <groupId>com.example</groupId>
-  <artifactId>storage-s3</artifactId>
+  <artifactId>storage-aws</artifactId>
 </dependency>
 ```
 
