@@ -1,6 +1,7 @@
 package com.example.storage.spring;
 
 import com.example.storage.ObjectStorage;
+import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.observation.ObservationRegistry;
 import org.springframework.beans.BeansException;
 import org.springframework.beans.factory.ObjectProvider;
@@ -35,15 +36,28 @@ public class StorageMetricsAutoConfiguration {
          * BeanPostProcessors, antes do que lhe acrescenta os handlers de métricas e tracing.
          */
         @Bean
-        static BeanPostProcessor objectStorageMetricsPostProcessor(ObjectProvider<ObservationRegistry> registry) {
+        static BeanPostProcessor objectStorageMetricsPostProcessor(ObjectProvider<ObservationRegistry> registry,
+                                                                   ObjectProvider<ExtraMeters> bytes) {
             return new BeanPostProcessor() {
                 @Override
                 public Object postProcessAfterInitialization(Object bean, String beanName) throws BeansException {
                     return bean instanceof ObjectStorage storage
-                            ? new ObjectStorageMetrics(storage, registry.getObject(), beanName)
+                            ? new ObjectStorageMetrics(storage, registry.getObject(), beanName,
+                                    bytes.getIfAvailable(() -> ExtraMeters.NONE))
                             : bean;
                 }
             };
+        }
+    }
+
+    /** Só com o {@code micrometer-core}: sem ele, as observações seguem e {@code storage.bytes} não existe. */
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnClass(MeterRegistry.class)
+    static class MeterExtraMetersConfiguration {
+
+        @Bean
+        static ExtraMeters meterExtraMeters(ObjectProvider<MeterRegistry> registry) {
+            return new MeterExtraMeters(registry);
         }
     }
 }
