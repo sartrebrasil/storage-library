@@ -104,12 +104,13 @@
       <version>${spring-boot.version}</version>
       <scope>test</scope>
     </dependency>
-    <!-- Testes: DefaultMeterObservationHandler, SimpleMeterRegistry e as auto-configurações de métricas -->
+    <!-- storage.bytes (DistributionSummary) e, nos testes, o DefaultMeterObservationHandler e o SimpleMeterRegistry.
+         Opcional: a aplicação traz o seu (o Actuator) e, sem ele, só as observações funcionam. -->
     <dependency>
       <groupId>io.micrometer</groupId>
       <artifactId>micrometer-core</artifactId>
       <version>${micrometer.version}</version>
-      <scope>test</scope>
+      <optional>true</optional>
     </dependency>
     <!-- Azure sem connection string: DefaultAzureCredential -->
     <dependency>

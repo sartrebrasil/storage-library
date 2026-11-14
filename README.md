@@ -325,8 +325,18 @@ qualquer bucket `DOWN` deixa `storage` `DOWN`. Desligue com `management.health.s
 Com um `ObservationRegistry` no contexto (o Actuator cria um), o starter decora todo
 `ObjectStorage` e observa cada operação em `storage.operations` (tags `operation` — `put`,
 `head`, `open`, `read`, `list`, `listDirectory`, `delete`, `deleteAll`, `copy`, `checkAccess`...—, `storage` com o nome do bean,
-`outcome`, e `error` com a classe da exceção, ou `none`). `outcome` é `success`, `not_found`
-(`ObjectNotFoundException`, sem marcar o span como erro) ou `error`. Com um registro de métricas
+`outcome`, e `error` com a classe da exceção, ou `none`). `outcome` é:
+
+| `outcome` | Quando | Span |
+|---|---|---|
+| `success` | Chamada ok | normal |
+| `not_found` | `ObjectNotFoundException`, ou `head` que devolve vazio | normal |
+| `partial` | `deleteAll` em que alguma chave falhou (não lança: a falha vem no `DeleteResult`) | normal |
+| `unsupported` | `UnsupportedOperationException` (o provedor não tem o recurso: retenção, legal hold...) | normal |
+| `retained`, `access_denied`, `precondition_failed`, `too_large`, `range_not_satisfiable` | A exceção tipada correspondente (`retained` é um `access_denied` mais específico) | erro |
+| `error` | Qualquer outra falha | erro |
+
+Com um registro de métricas
 (ex.: Prometheus), a observação vira o timer `storage.operations`; com Micrometer Tracing, vira
 também um span (`storage put`, `storage head`...), filho do span corrente da thread: chamada de
 dentro de uma requisição ou listener já rastreado fica no mesmo trace. Em outra thread
@@ -341,12 +351,78 @@ decorador, para os probes não gerarem spans nem amostras. Sem `ObservationRegis
 ou no contexto, não decora nada. O decorador esconde o tipo concreto:
 `getBean(S3ObjectStorage.class)` não encontra o bean; injete `ObjectStorage`.
 
+Com o `micrometer-core` (o Actuator traz), o starter registra também `storage.bytes`, um
+`DistributionSummary` em bytes (`count`, `sum`, `max`) com as tags `operation`, `storage` e
+`direction`: `put` registra o tamanho enviado (`upload`, só se concluído); `open` e `read`
+registram os bytes lidos até o encerramento (`download`), inclusive de uma leitura fechada antes do
+fim. `copy`, `presignPut` e multipart não entram. Throughput:
+`sum by (storage, direction) (rate(storage_bytes_sum[5m]))`.
+
+`deleteAll` registra ainda `storage.deleteAll.keys` (`Counter`, tags `storage` e `result`: `ok` ou
+`failed`), para ver quantas chaves de cada lote falharam. Taxa de falha:
+`sum(rate(storage_deleteAll_keys_total{result="failed"}[5m])) / sum(rate(storage_deleteAll_keys_total[5m]))`.
+
+`open` e `read` registram ainda o `Timer` `storage.operations.ttfb` (tags `operation` e `storage`):
+o tempo até o adapter devolver o stream, só nas aberturas bem-sucedidas. `storage.operations`
+inclui o consumo, que depende do cliente; para saber se o storage está lento, olhe o `ttfb`. O que
+ele cobre depende do adapter (no S3, até os cabeçalhos da resposta).
+
+Todos os meters `storage.*` levam a tag `provider` (`s3`, `gcs`, `azure`, `oci`, `sftp`,
+`filesystem`), deduzida da classe do adapter: vale também para um adapter que a aplicação declara.
+Uma implementação própria, o `InMemoryObjectStorage` do testkit ou um mock saem como `unknown`.
+Ex.: `sum by (provider) (rate(storage_operations_seconds_count{outcome="error"}[5m]))`.
+
+Uploads multipart (`initiateMultipart` em diante) ganham o ciclo de vida próprio:
+
+| Meter | Tipo | Conteúdo |
+|---|---|---|
+| `storage.multipart` | timer (tag `storage`, `outcome`) | Duração do upload, de `initiateMultipart` ao `complete` (`completed`) ou `abort` (`aborted`); uma falha do `complete` registra o `outcome` dela (ex.: `precondition_failed`). Só o primeiro desfecho conta. |
+| `storage.multipart.active` | `LongTaskTimer` | Uploads abertos. Um que nunca foi concluído nem abortado fica aqui (e o storage cobra as partes órfãs). |
+| `storage.multipart.parts` | timer (tags `storage`, `outcome=success\|error`) | Cada tentativa de `uploadPart`: `count` = partes, e a duração de cada uma. Um retry conta de novo. |
+| `storage.bytes` | summary | `operation=uploadPart`, `direction=upload`: bytes de cada parte enviada com sucesso. |
+
+`complete` e `abort` aparecem também em `storage.operations` (`multipartComplete`, `multipartAbort`).
+`listParts` e `listCompletedParts` são repassados sem medição. Uploads órfãos:
+`storage_multipart_active_seconds_max > 3600`.
+
+Enquanto uma observação está aberta, o handler de métricas do Boot mantém também o
+`LongTaskTimer` `storage.operations.active` (tags `operation` e `storage`; sem `outcome`, que só
+existe no fim). É o sinal de stream não fechado: `open`, `read`, `list` e `listDirectory` que
+ninguém fechou nem esgotou nunca saem dele, e a duração da mais antiga só cresce. Alerta
+sugerido: `storage_operations_active_seconds_max{operation=~"open|read|list|listDirectory"} > 600`
+(ajuste o limite ao maior download legítimo). O starter não fecha o stream por você: a observação
+vaza até o processo reiniciar.
+
 Percentis e SLOs são configuração do consumidor, sem código:
 
 ```properties
 management.metrics.distribution.percentiles-histogram.storage.operations=true
 management.metrics.distribution.slo.storage.operations=100ms,500ms,2s
 ```
+
+Consultas úteis no Prometheus (nomes pela convenção do Micrometer; `rate` sobre 5 minutos):
+
+```promql
+# Taxa de erro por bucket (not_found, unsupported e partial não contam como falha)
+sum by (storage) (rate(storage_operations_seconds_count{outcome!~"success|not_found|unsupported|partial"}[5m]))
+  / sum by (storage) (rate(storage_operations_seconds_count[5m]))
+
+# p95 por operação (precisa de percentiles-histogram)
+histogram_quantile(0.95, sum by (le, operation) (rate(storage_operations_seconds_bucket[5m])))
+
+# Vazão por bucket e direção, em bytes/s
+sum by (storage, direction) (rate(storage_bytes_sum[5m]))
+
+# Lentidão do storage, sem o cliente lento: média do ttfb
+sum by (storage) (rate(storage_operations_ttfb_seconds_sum[5m]))
+  / sum by (storage) (rate(storage_operations_ttfb_seconds_count[5m]))
+
+# Acesso negado ou retenção bloqueando escritas
+sum by (storage, outcome) (rate(storage_operations_seconds_count{outcome=~"access_denied|retained"}[5m]))
+```
+
+Os nomes de meter, as chaves de tag e os valores de `operation` e `outcome` acima são contrato:
+`StorageMetricsContractTest` os fixa, e uma mudança deve atualizar o teste e este README.
 
 No S3, o cliente e o presigner usam o mesmo bean `AwsCredentialsProvider`: credencial
 estática com `access-key`, senão a cadeia padrão da AWS. Na cadeia padrão, credenciais
