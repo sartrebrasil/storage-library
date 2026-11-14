@@ -322,6 +322,8 @@ declarado pela aplicação. Com vários `ObjectStorage` (um por bucket), o indic
 composto, um por bean, na chave do nome do bean (`/actuator/health/storage/reportsStorage`);
 qualquer bucket `DOWN` deixa `storage` `DOWN`. Desligue com `management.health.storage.enabled=false`.
 
+**Referência completa de todas as métricas: [docs/metricas.md](docs/metricas.md).**
+
 Com um `ObservationRegistry` no contexto (o Actuator cria um), o starter decora todo
 `ObjectStorage` e observa cada operação em `storage.operations` (tags `operation` — `put`,
 `head`, `open`, `read`, `list`, `listDirectory`, `delete`, `deleteAll`, `copy`, `checkAccess`...—, `storage` com o nome do bean,
