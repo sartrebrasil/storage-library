@@ -9,6 +9,7 @@ import com.example.storage.gcp.GcsObjectStorage;
 import com.example.storage.memory.InMemoryObjectStorage;
 import com.example.storage.oci.OciObjectStorage;
 import com.example.storage.aws.S3ObjectStorage;
+import com.example.storage.sftp.SftpConnection;
 import com.example.storage.sftp.SftpObjectStorage;
 import com.example.storage.spring.exemplos.AzureClientsExample;
 import com.example.storage.spring.exemplos.GcsClientsExample;
@@ -379,46 +380,31 @@ class StorageAutoConfigurationTest {
     }
 
     @Test
-    void sftpSemHostFalhaNaInicializacao() {
-        runner.withPropertyValues("storage.provider=sftp", "storage.bucket=reports",
-                        "storage.sftp.root=/reports", "storage.sftp.username=u", "storage.sftp.password=p")
+    void sftpSemConnectionFalhaComAMensagemDoProvedor() {
+        runner.withPropertyValues("storage.provider=sftp", "storage.bucket=reports", "storage.sftp.root=/reports")
                 .run(context -> assertThat(context).hasFailed().getFailure().hasRootCauseMessage(
-                        "storage.sftp.host é obrigatório quando storage.provider=sftp"));
+                        "storage.provider=sftp: declare um bean com.example.storage.sftp.SftpConnection"));
     }
 
     @Test
-    void sftpSemUsernameFalhaNaInicializacao() {
-        runner.withPropertyValues("storage.provider=sftp", "storage.bucket=reports", "storage.sftp.root=/reports",
-                        "storage.sftp.host=sftp.example.com", "storage.sftp.password=p")
-                .run(context -> assertThat(context).hasFailed().getFailure().hasRootCauseMessage(
-                        "storage.sftp.username é obrigatório quando storage.provider=sftp"));
+    void sftpUsaConnectionDaAplicacao() {
+        SftpConnection connection = mock(SftpConnection.class);
+        runner.withPropertyValues("storage.provider=sftp", "storage.bucket=reports", "storage.sftp.root=/reports")
+                .withBean(SftpConnection.class, () -> connection)
+                .run(context -> assertThat(context).hasSingleBean(SftpObjectStorage.class));
     }
 
     @Test
-    void sftpSemPasswordNemChaveFalhaNaInicializacao() {
-        runner.withPropertyValues("storage.provider=sftp", "storage.bucket=reports", "storage.sftp.root=/reports",
-                        "storage.sftp.host=sftp.example.com", "storage.sftp.username=u",
-                        "storage.sftp.insecure-trust-all-hosts=true")
-                .run(context -> assertThat(context).hasFailed().getFailure().hasRootCauseMessage(
-                        "Defina storage.sftp.password ou storage.sftp.private-key-path"));
-    }
-
-    @Test
-    void sftpSemRootFalhaNaInicializacaoAntesDeConectar() {
-        // host/username/password presentes e insecure ligado: se conectasse à rede pra falhar
-        // depois, esse teste ficaria lento/instável. requireSftpRoot roda antes do connect().
-        runner.withPropertyValues("storage.provider=sftp", "storage.bucket=reports",
-                        "storage.sftp.host=sftp.example.com", "storage.sftp.username=u", "storage.sftp.password=p",
-                        "storage.sftp.insecure-trust-all-hosts=true")
+    void sftpSemRootFalhaNaInicializacao() {
+        runner.withPropertyValues("storage.provider=sftp", "storage.bucket=reports")
+                .withBean(SftpConnection.class, () -> mock(SftpConnection.class))
                 .run(context -> assertThat(context).hasFailed().getFailure().hasRootCauseMessage(
                         "storage.sftp.root é obrigatório quando storage.provider=sftp"));
     }
 
     @Test
     void semAdapterSftpNoClasspathNaoCriaStorage() {
-        runner.withPropertyValues("storage.provider=sftp", "storage.bucket=reports", "storage.sftp.root=/reports",
-                        "storage.sftp.host=sftp.example.com", "storage.sftp.username=u", "storage.sftp.password=p",
-                        "storage.sftp.insecure-trust-all-hosts=true")
+        runner.withPropertyValues("storage.provider=sftp", "storage.bucket=reports", "storage.sftp.root=/reports")
                 .withClassLoader(new FilteredClassLoader(SftpObjectStorage.class))
                 .run(context -> assertThat(context).doesNotHaveBean(ObjectStorage.class));
     }

@@ -14,11 +14,8 @@ import com.google.cloud.storage.MultipartUploadClient;
 import com.google.cloud.storage.Storage;
 import com.oracle.bmc.objectstorage.ObjectStorageClient;
 import com.oracle.bmc.objectstorage.requests.GetNamespaceRequest;
-import net.schmizz.sshj.SSHClient;
-import net.schmizz.sshj.transport.verification.PromiscuousVerifier;
 import org.springframework.beans.factory.BeanFactory;
 import org.springframework.beans.factory.BeanFactoryAware;
-import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.support.AutowireCandidateQualifier;
 import org.springframework.beans.factory.support.BeanDefinitionRegistry;
@@ -45,8 +42,6 @@ import org.springframework.core.type.AnnotationMetadata;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.presigner.S3Presigner;
 
-import java.io.File;
-import java.io.IOException;
 import java.nio.file.Path;
 import java.util.Map;
 
@@ -239,84 +234,24 @@ public class StorageAutoConfiguration {
     }
 
     /**
-     * Uma {@link SftpConnection} para todos os buckets, que limita os canais abertos e reconecta quando a
-     * conexão cai. Sem {@link SSHClient} da aplicação, o starter conecta e autentica por properties; com um,
-     * usa-o como está, sem reconectar. Cada bucket vira a subpasta {@code <root>/<bucket>} no servidor.
+     * A {@link SftpConnection} é da aplicação e serve a todos os buckets: ela limita os canais abertos e, criada com
+     * {@code reconnecting}, reconecta quando a conexão cai. Cada bucket vira a subpasta {@code <root>/<bucket>} no
+     * servidor.
      */
     @Configuration(proxyBeanMethods = false)
     @ConditionalOnClass(SftpObjectStorage.class)
     @ConditionalOnProperty(prefix = PREFIX, name = "provider", havingValue = "sftp")
     static class SftpStorageConfiguration {
 
-        @Bean(destroyMethod = "close")
-        @ConditionalOnMissingBean
-        SftpConnection sftpConnection(ObjectProvider<SSHClient> applicationClient, StorageProperties properties)
-                throws IOException {
-            SSHClient own = applicationClient.getIfAvailable();
-            if (own != null) {
-                return SftpConnection.of(own);
-            }
-            StorageProperties.Sftp sftp = properties.sftp();
-            if (sftp.host() == null) {
-                throw new IllegalStateException("storage.sftp.host é obrigatório quando storage.provider=sftp");
-            }
-            if (sftp.username() == null) {
-                throw new IllegalStateException("storage.sftp.username é obrigatório quando storage.provider=sftp");
-            }
-            if (sftp.password() == null && sftp.privateKeyPath() == null) {
-                throw new IllegalStateException("Defina storage.sftp.password ou storage.sftp.private-key-path");
-            }
-            requireSftpRoot(properties);   // valida tudo antes de abrir conexão de rede
-            return SftpConnection.reconnecting(() -> connect(sftp), sftp.maxChannels());
-        }
-
-        private static SSHClient connect(StorageProperties.Sftp sftp) throws IOException {
-            SSHClient client = new SSHClient();
-            configureHostKeyVerification(client, sftp);
-            client.getConnection().getKeepAlive().setKeepAliveInterval((int) sftp.keepAlive().toSeconds());
-            try {
-                client.connect(sftp.host(), sftp.port());
-                if (sftp.password() != null) {
-                    client.authPassword(sftp.username(), sftp.password());
-                } else {
-                    client.authPublickey(sftp.username(), sftp.privateKeyPath());
-                }
-            } catch (IOException | RuntimeException e) {
-                closeQuietly(client);
-                throw e;
-            }
-            return client;
-        }
-
-        /** Sem {@code known-hosts} nem {@code insecure-trust-all-hosts}, falha cedo em vez de aceitar qualquer host key. */
-        private static void configureHostKeyVerification(SSHClient client, StorageProperties.Sftp sftp) throws IOException {
-            if (sftp.knownHosts() != null) {
-                client.loadKnownHosts(new File(sftp.knownHosts()));
-            } else if (sftp.insecureTrustAllHosts()) {
-                client.addHostKeyVerifier(new PromiscuousVerifier());
-            } else {
-                try {
-                    client.loadKnownHosts();
-                } catch (IOException e) {
-                    throw new IllegalStateException(
-                            "Nenhum known_hosts encontrado (~/.ssh/known_hosts); defina storage.sftp.known-hosts "
-                                    + "ou storage.sftp.insecure-trust-all-hosts=true (não recomendado fora de dev/teste)", e);
-                }
-            }
-        }
-
-        private static void closeQuietly(SSHClient client) {
-            try {
-                client.close();
-            } catch (IOException ignored) {
-                // a falha que importa é a original da conexão/autenticação
-            }
-        }
-
+        /** A {@code SftpConnection} é da aplicação e só é resolvida ao criar o primeiro {@code ObjectStorage}. */
         @Bean
-        BucketStorageFactory sftpBucketStorageFactory(SftpConnection sftpConnection, StorageProperties properties) {
-            String root = requireSftpRoot(properties);
-            return bucket -> new SftpObjectStorage(sftpConnection, root + "/" + bucket);
+        BucketStorageFactory sftpBucketStorageFactory(BeanFactory beans, StorageProperties properties) {
+            return bucket -> {
+                String root = requireSftpRoot(properties);
+                return new SftpObjectStorage(
+                        StorageClientBeans.require(beans, SftpConnection.class, StorageProperties.Provider.SFTP),
+                        root + "/" + bucket);
+            };
         }
 
         @Bean
