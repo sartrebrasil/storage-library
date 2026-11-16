@@ -9,9 +9,16 @@ import com.example.storage.gcp.GcsObjectStorage;
 import com.example.storage.memory.InMemoryObjectStorage;
 import com.example.storage.oci.OciObjectStorage;
 import com.example.storage.aws.S3ObjectStorage;
+import com.example.storage.sftp.SftpConnection;
 import com.example.storage.sftp.SftpObjectStorage;
+import com.example.storage.spring.exemplos.AzureClientsExample;
+import com.example.storage.spring.exemplos.GcsClientsExample;
+import com.example.storage.spring.exemplos.OciClientsExample;
+import com.example.storage.spring.exemplos.S3ClientsExample;
 import com.google.cloud.NoCredentials;
 import com.google.cloud.storage.HttpStorageOptions;
+import com.google.cloud.storage.MultipartUploadClient;
+import com.google.cloud.storage.Storage;
 import com.oracle.bmc.objectstorage.responses.GetNamespaceResponse;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -20,10 +27,6 @@ import org.springframework.boot.test.context.FilteredClassLoader;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
-import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
-import software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider;
-import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.presigner.S3Presigner;
 
@@ -46,10 +49,12 @@ class StorageAutoConfigurationTest {
     @TempDir
     Path tempDir;
 
-    private static final String[] MINIO = {
-            "storage.provider=s3", "storage.bucket=reports",
-            "storage.s3.region=us-east-1", "storage.s3.endpoint=http://localhost:9000", "storage.s3.path-style=true",
-            "storage.s3.access-key=minioadmin", "storage.s3.secret-key=minioadmin"};
+    private static final String[] MINIO = {"storage.provider=s3", "storage.bucket=reports"};
+
+    /** O S3 com os clientes que a aplicação declararia (exemplo do emulador: MinIO em localhost:9000, path-style). */
+    private ApplicationContextRunner s3() {
+        return runner.withUserConfiguration(S3ClientsExample.Emulador.class).withPropertyValues(MINIO);
+    }
 
     @Test
     void semProviderNaoCriaStorage() {
@@ -57,27 +62,15 @@ class StorageAutoConfigurationTest {
     }
 
     @Test
-    void s3CriaClienteEPresignerComAMesmaConfiguracao() {
-        runner.withPropertyValues(MINIO).run(context -> {
-            assertThat(context).hasSingleBean(S3Client.class).hasSingleBean(S3Presigner.class);
-            ObjectStorage storage = context.getBean(ObjectStorage.class);
-            assertThat(storage).isInstanceOf(S3ObjectStorage.class);
-            // Endpoint e path-style chegaram ao presigner (assinatura local, sem rede)
-            URI url = storage.presignGet("r.csv", Duration.ofMinutes(5));
-            assertThat(url.toString()).startsWith("http://localhost:9000/reports/r.csv?");
-        });
-    }
-
-    @Test
     void providerSemBucketFalhaNaInicializacao() {
-        runner.withPropertyValues("storage.provider=s3", "storage.s3.region=us-east-1").run(context ->
+        runner.withPropertyValues("storage.provider=s3").run(context ->
                 assertThat(context).hasFailed().getFailure().hasRootCauseMessage(
                         "storage.bucket é obrigatório quando storage.provider está definido"));
     }
 
     @Test
     void bucketsCriaUmStoragePorEntradaComQualifier() {
-        runner.withPropertyValues(MINIO).withPropertyValues("storage.bucket=",
+        s3().withPropertyValues("storage.bucket=",
                         "storage.buckets.reports=oobj-reports", "storage.buckets.artifacts=oobj-artifacts")
                 .withUserConfiguration(QualifiedConsumer.class)
                 .run(context -> {
@@ -99,7 +92,7 @@ class StorageAutoConfigurationTest {
 
     @Test
     void bucketEBucketsJuntosFalham() {
-        runner.withPropertyValues(MINIO).withPropertyValues("storage.buckets.reports=oobj-reports").run(context ->
+        s3().withPropertyValues("storage.buckets.reports=oobj-reports").run(context ->
                 assertThat(context).hasFailed().getFailure()
                         .hasRootCauseMessage("Defina storage.bucket ou storage.buckets, não os dois"));
     }
@@ -112,137 +105,138 @@ class StorageAutoConfigurationTest {
     }
 
     @Test
-    void s3UsaUmSoProviderDeCredenciaisNoClienteENoPresigner() {
-        runner.withPropertyValues(MINIO).run(context -> {
-            AwsCredentialsProvider provider = context.getBean(AwsCredentialsProvider.class);
-            assertThat(provider).isInstanceOf(StaticCredentialsProvider.class);
-            assertThat(context.getBean(S3Client.class).serviceClientConfiguration().credentialsProvider())
-                    .isSameAs(provider);
+    void s3UsaClienteEPresignerDaAplicacao() {
+        s3().run(context -> {
+            assertThat(context).hasSingleBean(S3Client.class).hasSingleBean(S3Presigner.class);
+            ObjectStorage storage = context.getBean(ObjectStorage.class);
+            assertThat(storage).isInstanceOf(S3ObjectStorage.class);
+            // endpoint e path-style do presigner da aplicação (assinatura local, sem rede)
+            assertThat(storage.presignGet("r.csv", Duration.ofMinutes(5)).toString())
+                    .startsWith("http://localhost:9000/reports/r.csv?");
         });
     }
 
     @Test
-    void s3SemAccessKeyUsaCadeiaPadraoComRenovacaoEmFundo() {
-        runner.withPropertyValues("storage.provider=s3", "storage.bucket=reports", "storage.s3.region=us-east-1")
-                .run(context -> assertThat(context.getBean(AwsCredentialsProvider.class))
-                        .isInstanceOf(DefaultCredentialsProvider.class)
-                        .hasFieldOrPropertyWithValue("asyncCredentialUpdateEnabled", true));
+    void s3SemClientesFalhaComAMensagemDoProvedor() {
+        runner.withPropertyValues(MINIO).run(context -> assertThat(context).hasFailed().getFailure()
+                .hasRootCauseMessage("storage.provider=s3: declare um bean software.amazon.awssdk.services.s3.S3Client"));
     }
 
     @Test
-    void s3RenovacaoEmFundoPodeSerDesligada() {
-        runner.withPropertyValues("storage.provider=s3", "storage.bucket=reports", "storage.s3.region=us-east-1",
-                        "storage.s3.async-credential-update=false")
-                .run(context -> assertThat(context.getBean(AwsCredentialsProvider.class))
-                        .hasFieldOrPropertyWithValue("asyncCredentialUpdateEnabled", false));
-    }
-
-    @Test
-    void s3ComChavesVaziasUsaCadeiaPadrao() {
-        // o que chega de "access-key: ${REPORT_CREDENTIALS_ACCESS_KEY:}" sem a variável.
-        // Sem região no starter, o SDK a resolve pela cadeia padrão; aws.region isola o teste do ambiente.
-        System.setProperty("aws.region", "us-east-1");
-        try {
-            runner.withPropertyValues("storage.provider=s3", "storage.bucket=reports", "storage.s3.region=",
-                            "storage.s3.access-key=", "storage.s3.secret-key=")
-                    .run(context -> {
-                        assertThat(context).hasNotFailed();
-                        assertThat(context.getBean(AwsCredentialsProvider.class)).isInstanceOf(DefaultCredentialsProvider.class);
-                        assertThat(context.getBean(StorageProperties.class).s3().region()).isNull();
-                    });
-        } finally {
-            System.clearProperty("aws.region");
-        }
-    }
-
-    @Test
-    void s3ComSoUmaDasChavesFalhaComMensagemClara() {
-        runner.withPropertyValues("storage.provider=s3", "storage.bucket=reports", "storage.s3.region=us-east-1",
-                        "storage.s3.access-key=minioadmin")
+    void s3ComDoisClientesSemPrimaryFalha() {
+        s3().withBean("outroS3Client", S3Client.class, () -> mock(S3Client.class))
                 .run(context -> assertThat(context).hasFailed().getFailure().hasRootCauseMessage(
-                        "Defina storage.s3.access-key e storage.s3.secret-key juntas, ou nenhuma das duas"));
+                        "storage.provider=s3: há mais de um bean software.amazon.awssdk.services.s3.S3Client; "
+                                + "marque um com @Primary"));
     }
 
     @Test
-    void s3ReaproveitaProviderDaAplicacao() {
-        AwsCredentialsProvider own = StaticCredentialsProvider.create(AwsBasicCredentials.create("app", "app"));
-        runner.withPropertyValues(MINIO).withBean(AwsCredentialsProvider.class, () -> own).run(context ->
-                assertThat(context.getBean(S3Client.class).serviceClientConfiguration().credentialsProvider())
-                        .isSameAs(own));
+    void s3ComPrimaryUsaOPrimario() {
+        S3Client primary = mock(S3Client.class);
+        s3().withBean("outroS3Client", S3Client.class, () -> primary, definition -> definition.setPrimary(true))
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertThat(context.getBean(ObjectStorage.class)).hasFieldOrPropertyWithValue("s3", primary);
+                });
+    }
+
+    @Test
+    void objectStorageDaAplicacaoNaoExigeClientes() {
+        runner.withPropertyValues(MINIO).withBean(ObjectStorage.class, InMemoryObjectStorage::new)
+                .run(context -> assertThat(context).hasNotFailed());
+    }
+
+    @Test
+    void providerVazioNaoCriaClienteNenhum() {
+        java.util.concurrent.atomic.AtomicInteger created = new java.util.concurrent.atomic.AtomicInteger();
+        runner.withBean("s3Client", S3Client.class, () -> {
+                    created.incrementAndGet();
+                    return mock(S3Client.class);
+                }, definition -> definition.setLazyInit(true))
+                .run(context -> {
+                    assertThat(context).hasNotFailed().doesNotHaveBean(ObjectStorage.class);
+                    assertThat(created).hasValue(0);
+                });
     }
 
     @Test
     void s3ChecksumAceitaNoneERejeitaValorDesconhecido() {
-        runner.withPropertyValues(MINIO).withPropertyValues("storage.s3.checksum=none")
+        s3().withPropertyValues("storage.s3.checksum=none")
                 .run(context -> assertThat(context).hasSingleBean(S3ObjectStorage.class));
-        runner.withPropertyValues(MINIO).withPropertyValues("storage.s3.checksum=md5")
+        s3().withPropertyValues("storage.s3.checksum=md5")
                 .run(context -> assertThat(context).hasFailed());
     }
 
     @Test
     void providerAceitaMaiusculas() {
-        runner.withPropertyValues(MINIO).withPropertyValues("storage.provider=S3")
+        s3().withPropertyValues("storage.provider=S3")
                 .run(context -> assertThat(context).hasSingleBean(S3ObjectStorage.class));
     }
 
     @Test
     void semAdapterNoClasspathNaoCriaStorage() {
-        runner.withPropertyValues(MINIO).withClassLoader(new FilteredClassLoader(S3ObjectStorage.class))
+        s3().withClassLoader(new FilteredClassLoader(S3ObjectStorage.class))
                 .run(context -> assertThat(context).doesNotHaveBean(ObjectStorage.class));
     }
 
     @Test
     void storageDaAplicacaoDesligaAAutoConfiguracao() {
-        runner.withPropertyValues(MINIO).withBean(ObjectStorage.class, InMemoryObjectStorage::new).run(context -> {
+        s3().withBean(ObjectStorage.class, InMemoryObjectStorage::new).run(context -> {
             assertThat(context).hasSingleBean(ObjectStorage.class);
             assertThat(context.getBean(ObjectStorage.class)).isInstanceOf(InMemoryObjectStorage.class);
         });
     }
 
+    /** O Azure com o {@code BlobServiceClient} que a aplicação declararia (exemplo do emulador: Azurite). */
+    private ApplicationContextRunner azure() {
+        return runner.withUserConfiguration(AzureClientsExample.Emulador.class)
+                .withPropertyValues("storage.provider=azure", "storage.bucket=reports");
+    }
+
     @Test
-    void azureComConnectionStringUsaSasPorChaveDaConta() {
-        runner.withPropertyValues("storage.provider=azure", "storage.bucket=reports",
-                "storage.azure.connection-string=UseDevelopmentStorage=true").run(context -> {
+    void azureUsaBlobServiceClientDaAplicacaoComSasPorChaveDaConta() {
+        azure().withPropertyValues("storage.azure.sas=shared-key").run(context -> {
             ObjectStorage storage = context.getBean(ObjectStorage.class);
-            assertThat(storage).isInstanceOf(AzureBlobObjectStorage.class);
+            assertThat(storage).isInstanceOf(AzureBlobObjectStorage.class)
+                    .hasFieldOrPropertyWithValue("userDelegation", false);
             // SAS por chave da conta é gerado localmente; user delegation exigiria rede.
-            URI url = storage.presignGet("r.csv", Duration.ofMinutes(5));
-            assertThat(url.toString()).startsWith("http://127.0.0.1:10000/devstoreaccount1/reports/r.csv?")
-                    .contains("sig=");
+            assertThat(storage.presignGet("r.csv", Duration.ofMinutes(5)).toString())
+                    .startsWith("http://127.0.0.1:10000/devstoreaccount1/reports/r.csv?").contains("sig=");
         });
     }
 
     @Test
-    void azureComEndpointUsaDefaultAzureCredential() {
-        runner.withPropertyValues("storage.provider=azure", "storage.bucket=reports",
-                        "storage.azure.endpoint=https://conta.blob.core.windows.net")
-                .run(context -> assertThat(context).hasSingleBean(AzureBlobObjectStorage.class));
+    void azureComUserDelegationUsaSasPorDelegacao() {
+        azure().withPropertyValues("storage.azure.sas=user-delegation").run(context ->
+                assertThat(context.getBean(ObjectStorage.class)).isInstanceOf(AzureBlobObjectStorage.class)
+                        .hasFieldOrPropertyWithValue("userDelegation", true));
     }
 
     @Test
-    void azureComEndpointSemAzureIdentityFalhaComMensagemClara() {
-        runner.withPropertyValues("storage.provider=azure", "storage.bucket=reports",
-                        "storage.azure.endpoint=https://conta.blob.core.windows.net")
-                .withClassLoader(new FilteredClassLoader("com.azure.identity"))
-                .run(context -> assertThat(context).getFailure().rootCause().hasMessageContaining("azure-identity"));
+    void azureSemSasFalha() {
+        azure().run(context -> assertThat(context).hasFailed().getFailure().hasRootCauseMessage(
+                "storage.azure.sas é obrigatório quando storage.provider=azure (shared-key ou user-delegation)"));
     }
 
     @Test
-    void toStringDasPropertiesNaoExpoeSegredos() {
-        var s3 = new StorageProperties.S3(null, null, false, "AKIAEXEMPLO", "segredo-s3",
-                StorageProperties.S3.Checksum.CRC32, true);
-        var azure = new StorageProperties.Azure("AccountName=a;AccountKey=segredo-azure", null);
-        var sftp = new StorageProperties.Sftp("h", 22, "u", "segredo-sftp", null, "/r", null, false,
-                Duration.ofSeconds(30), 8);
+    void azureSemSasComObjectStorageDaAplicacaoSobe() {
+        azure().withBean(ObjectStorage.class, InMemoryObjectStorage::new)
+                .run(context -> assertThat(context).hasNotFailed());
+    }
 
-        assertThat(s3 + " " + azure + " " + sftp).doesNotContain("segredo").contains("AKIAEXEMPLO", "****");
+    @Test
+    void azureSemBlobServiceClientFalhaCitandoOContainerClient() {
+        runner.withPropertyValues("storage.provider=azure", "storage.bucket=reports", "storage.azure.sas=shared-key")
+                .run(context -> assertThat(context).hasFailed().getFailure().hasRootCauseMessage(
+                        "storage.provider=azure: declare um bean com.azure.storage.blob.BlobServiceClient; o starter "
+                                + "deriva o BlobContainerClient por dentro, e um BlobContainerClient da aplicação não é "
+                                + "mais usado"));
     }
 
     @Test
     void azureVariosContainersDerivamDoServiceClient() {
-        runner.withPropertyValues("storage.provider=azure",
-                        "storage.azure.connection-string=UseDevelopmentStorage=true")
-                .withUserConfiguration(AzureMultiContainer.class)
+        runner.withPropertyValues("storage.provider=azure")
+                .withUserConfiguration(AzureClientsExample.Emulador.class, AzureMultiContainer.class)
                 .run(context -> {
                     assertThat(context).hasNotFailed().doesNotHaveBean(BlobContainerClient.class);
                     ObjectStorage artifacts = context.getBean("artifactsStorage", ObjectStorage.class);
@@ -266,20 +260,20 @@ class StorageAutoConfigurationTest {
     }
 
     @Test
-    void azureSemCredencialFalhaComMensagemClara() {
-        runner.withPropertyValues("storage.provider=azure", "storage.bucket=reports").run(context ->
-                assertThat(context).hasFailed().getFailure()
-                        .hasRootCauseMessage("Defina storage.azure.connection-string ou storage.azure.endpoint"));
+    void gcsUsaStorageEMultipartDaAplicacao() {
+        HttpStorageOptions options = GcsClientsExample.options(NoCredentials.getInstance(), "projeto");
+
+        runner.withPropertyValues("storage.provider=gcs", "storage.bucket=reports")
+                .withBean(Storage.class, () -> GcsClientsExample.storage(options))
+                .withBean(MultipartUploadClient.class, () -> GcsClientsExample.multipart(options))
+                .run(context -> assertThat(context).hasSingleBean(GcsObjectStorage.class));
     }
 
     @Test
-    void gcsReaproveitaOpcoesDaAplicacao() {
-        HttpStorageOptions options = HttpStorageOptions.newBuilder()
-                .setProjectId("projeto").setCredentials(NoCredentials.getInstance()).build();
-
+    void gcsSemBeansFalhaComAMensagemDoProvedor() {
         runner.withPropertyValues("storage.provider=gcs", "storage.bucket=reports")
-                .withBean(HttpStorageOptions.class, () -> options)
-                .run(context -> assertThat(context).hasSingleBean(GcsObjectStorage.class));
+                .run(context -> assertThat(context).hasFailed().getFailure().hasRootCauseMessage(
+                        "storage.provider=gcs: declare um bean com.google.cloud.storage.Storage"));
     }
 
     @Test
@@ -293,6 +287,30 @@ class StorageAutoConfigurationTest {
                     assertThat(context).hasSingleBean(OciObjectStorage.class);
                     verify(client).getNamespace(any());
                 });
+    }
+
+    @Test
+    void ociSemClienteFalhaComAMensagemDoProvedor() {
+        runner.withPropertyValues("storage.provider=oci", "storage.bucket=reports", "storage.oci.namespace=ns")
+                .run(context -> assertThat(context).hasFailed().getFailure().hasRootCauseMessage(
+                        "storage.provider=oci: declare um bean com.oracle.bmc.objectstorage.ObjectStorage"));
+    }
+
+    @Test
+    void ociUsaOClienteMontadoPeloExemplo() throws Exception {
+        java.security.KeyPairGenerator generator = java.security.KeyPairGenerator.getInstance("RSA");
+        generator.initialize(2048);
+        byte[] der = generator.generateKeyPair().getPrivate().getEncoded();
+        String pem = "-----BEGIN PRIVATE KEY-----\n" + java.util.Base64.getMimeEncoder(64, "\n".getBytes())
+                .encodeToString(der) + "\n-----END PRIVATE KEY-----\n";
+        var auth = com.oracle.bmc.auth.SimpleAuthenticationDetailsProvider.builder().tenantId("t").userId("u")
+                .fingerprint("aa:bb").region(com.oracle.bmc.Region.SA_SAOPAULO_1)
+                .privateKeySupplier(() -> new java.io.ByteArrayInputStream(pem.getBytes())).build();
+        var client = OciClientsExample.objectStorageClient(auth);
+
+        runner.withPropertyValues("storage.provider=oci", "storage.bucket=reports", "storage.oci.namespace=ns")
+                .withBean(com.oracle.bmc.objectstorage.ObjectStorage.class, () -> client)
+                .run(context -> assertThat(context).hasSingleBean(OciObjectStorage.class));
     }
 
     @Test
@@ -351,46 +369,31 @@ class StorageAutoConfigurationTest {
     }
 
     @Test
-    void sftpSemHostFalhaNaInicializacao() {
-        runner.withPropertyValues("storage.provider=sftp", "storage.bucket=reports",
-                        "storage.sftp.root=/reports", "storage.sftp.username=u", "storage.sftp.password=p")
+    void sftpSemConnectionFalhaComAMensagemDoProvedor() {
+        runner.withPropertyValues("storage.provider=sftp", "storage.bucket=reports", "storage.sftp.root=/reports")
                 .run(context -> assertThat(context).hasFailed().getFailure().hasRootCauseMessage(
-                        "storage.sftp.host é obrigatório quando storage.provider=sftp"));
+                        "storage.provider=sftp: declare um bean com.example.storage.sftp.SftpConnection"));
     }
 
     @Test
-    void sftpSemUsernameFalhaNaInicializacao() {
-        runner.withPropertyValues("storage.provider=sftp", "storage.bucket=reports", "storage.sftp.root=/reports",
-                        "storage.sftp.host=sftp.example.com", "storage.sftp.password=p")
-                .run(context -> assertThat(context).hasFailed().getFailure().hasRootCauseMessage(
-                        "storage.sftp.username é obrigatório quando storage.provider=sftp"));
+    void sftpUsaConnectionDaAplicacao() {
+        SftpConnection connection = mock(SftpConnection.class);
+        runner.withPropertyValues("storage.provider=sftp", "storage.bucket=reports", "storage.sftp.root=/reports")
+                .withBean(SftpConnection.class, () -> connection)
+                .run(context -> assertThat(context).hasSingleBean(SftpObjectStorage.class));
     }
 
     @Test
-    void sftpSemPasswordNemChaveFalhaNaInicializacao() {
-        runner.withPropertyValues("storage.provider=sftp", "storage.bucket=reports", "storage.sftp.root=/reports",
-                        "storage.sftp.host=sftp.example.com", "storage.sftp.username=u",
-                        "storage.sftp.insecure-trust-all-hosts=true")
-                .run(context -> assertThat(context).hasFailed().getFailure().hasRootCauseMessage(
-                        "Defina storage.sftp.password ou storage.sftp.private-key-path"));
-    }
-
-    @Test
-    void sftpSemRootFalhaNaInicializacaoAntesDeConectar() {
-        // host/username/password presentes e insecure ligado: se conectasse à rede pra falhar
-        // depois, esse teste ficaria lento/instável. requireSftpRoot roda antes do connect().
-        runner.withPropertyValues("storage.provider=sftp", "storage.bucket=reports",
-                        "storage.sftp.host=sftp.example.com", "storage.sftp.username=u", "storage.sftp.password=p",
-                        "storage.sftp.insecure-trust-all-hosts=true")
+    void sftpSemRootFalhaNaInicializacao() {
+        runner.withPropertyValues("storage.provider=sftp", "storage.bucket=reports")
+                .withBean(SftpConnection.class, () -> mock(SftpConnection.class))
                 .run(context -> assertThat(context).hasFailed().getFailure().hasRootCauseMessage(
                         "storage.sftp.root é obrigatório quando storage.provider=sftp"));
     }
 
     @Test
     void semAdapterSftpNoClasspathNaoCriaStorage() {
-        runner.withPropertyValues("storage.provider=sftp", "storage.bucket=reports", "storage.sftp.root=/reports",
-                        "storage.sftp.host=sftp.example.com", "storage.sftp.username=u", "storage.sftp.password=p",
-                        "storage.sftp.insecure-trust-all-hosts=true")
+        runner.withPropertyValues("storage.provider=sftp", "storage.bucket=reports", "storage.sftp.root=/reports")
                 .withClassLoader(new FilteredClassLoader(SftpObjectStorage.class))
                 .run(context -> assertThat(context).doesNotHaveBean(ObjectStorage.class));
     }

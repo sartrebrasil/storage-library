@@ -1,9 +1,7 @@
 package com.example.storage.spring;
 
-import com.azure.identity.DefaultAzureCredentialBuilder;
 import com.azure.storage.blob.BlobContainerClient;
 import com.azure.storage.blob.BlobServiceClient;
-import com.azure.storage.blob.BlobServiceClientBuilder;
 import com.example.storage.ObjectStorage;
 import com.example.storage.azure.AzureBlobObjectStorage;
 import com.example.storage.filesystem.FileSystemObjectStorage;
@@ -12,20 +10,13 @@ import com.example.storage.oci.OciObjectStorage;
 import com.example.storage.aws.S3ObjectStorage;
 import com.example.storage.sftp.SftpConnection;
 import com.example.storage.sftp.SftpObjectStorage;
-import com.google.cloud.storage.HttpStorageOptions;
 import com.google.cloud.storage.MultipartUploadClient;
-import com.google.cloud.storage.MultipartUploadSettings;
 import com.google.cloud.storage.Storage;
-import com.oracle.bmc.auth.ConfigFileAuthenticationDetailsProvider;
 import com.oracle.bmc.objectstorage.ObjectStorageClient;
 import com.oracle.bmc.objectstorage.requests.GetNamespaceRequest;
-import net.schmizz.sshj.SSHClient;
-import net.schmizz.sshj.transport.verification.PromiscuousVerifier;
 import org.springframework.beans.factory.BeanFactory;
 import org.springframework.beans.factory.BeanFactoryAware;
-import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
-import org.springframework.beans.factory.config.ConfigurableListableBeanFactory;
 import org.springframework.beans.factory.support.AutowireCandidateQualifier;
 import org.springframework.beans.factory.support.BeanDefinitionRegistry;
 import org.springframework.beans.factory.support.RootBeanDefinition;
@@ -48,21 +39,9 @@ import org.springframework.context.annotation.ImportBeanDefinitionRegistrar;
 import org.springframework.core.env.Environment;
 import org.springframework.core.type.AnnotatedTypeMetadata;
 import org.springframework.core.type.AnnotationMetadata;
-import org.springframework.util.ClassUtils;
-import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
-import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
-import software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider;
-import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
-import software.amazon.awssdk.core.checksums.RequestChecksumCalculation;
-import software.amazon.awssdk.core.checksums.ResponseChecksumValidation;
-import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.s3.S3Client;
-import software.amazon.awssdk.services.s3.S3ClientBuilder;
-import software.amazon.awssdk.services.s3.S3Configuration;
 import software.amazon.awssdk.services.s3.presigner.S3Presigner;
 
-import java.io.File;
-import java.io.IOException;
 import java.nio.file.Path;
 import java.util.Map;
 
@@ -70,9 +49,11 @@ import java.util.Map;
  * Cria o {@link ObjectStorage} do provedor em {@code storage.provider}. Cada provedor só é
  * configurado se o adapter correspondente estiver no classpath.
  *
- * <p>Clientes do SDK declarados pela aplicação ({@code S3Client}, {@code BlobContainerClient},
- * {@code HttpStorageOptions}, cliente OCI...) são reaproveitados; um {@code ObjectStorage}
- * próprio desliga esta auto-configuração.</p>
+ * <p>O starter não cria credencial, cliente nem presigner: a aplicação declara o objeto raiz do provedor
+ * ({@code S3Client} e {@code S3Presigner}, {@code Storage} e {@code MultipartUploadClient},
+ * {@code BlobServiceClient}, o cliente OCI, {@code SftpConnection}), e o starter monta o {@code ObjectStorage}
+ * de cada bucket sobre ele. Um {@code ObjectStorage} próprio desliga esta auto-configuração, e aí os clientes
+ * não são exigidos.</p>
  *
  * <p>Vários buckets: {@code storage.buckets.<nome>=<bucket>} cria um {@code ObjectStorage} por
  * entrada ({@code <nome>ObjectStorage}, qualifier {@code <nome>}), todos com os mesmos clientes,
@@ -84,7 +65,7 @@ import java.util.Map;
  */
 @AutoConfiguration
 @EnableConfigurationProperties(StorageProperties.class)
-@Import(StorageAutoConfiguration.BucketsRegistrar.class)
+@Import({StorageAutoConfiguration.BucketsRegistrar.class, StorageAutoConfiguration.RemovedKeysRegistrar.class})
 public class StorageAutoConfiguration {
 
     private static final String PREFIX = "storage";
@@ -117,62 +98,13 @@ public class StorageAutoConfiguration {
     @ConditionalOnProperty(prefix = PREFIX, name = "provider", havingValue = "s3")
     static class S3StorageConfiguration {
 
-        /**
-         * Um provider só, compartilhado pelo cliente e pelo presigner: credencial estática com
-         * {@code access-key}, senão a cadeia padrão da AWS (variáveis, IRSA, perfil, metadata),
-         * com renovação em fundo das credenciais temporárias ({@code async-credential-update}).
-         */
+        /** Os clientes são da aplicação e só são resolvidos ao criar o primeiro {@code ObjectStorage}. */
         @Bean
-        @ConditionalOnMissingBean
-        AwsCredentialsProvider s3CredentialsProvider(StorageProperties properties) {
-            StorageProperties.S3 s3 = properties.s3();
-            return s3.accessKey() != null
-                    ? StaticCredentialsProvider.create(AwsBasicCredentials.create(s3.accessKey(), s3.secretKey()))
-                    : DefaultCredentialsProvider.builder().asyncCredentialUpdateEnabled(s3.asyncCredentialUpdate()).build();
-        }
-
-        @Bean
-        @ConditionalOnMissingBean
-        S3Client s3Client(StorageProperties properties, AwsCredentialsProvider s3CredentialsProvider) {
-            StorageProperties.S3 s3 = properties.s3();
-            S3ClientBuilder builder = S3Client.builder().forcePathStyle(s3.pathStyle())
-                    .credentialsProvider(s3CredentialsProvider);
-            if (s3.checksum() == StorageProperties.S3.Checksum.NONE) {
-                // Sem isso o SDK (>= 2.30) calcula CRC32 sozinho, mesmo sem o adapter pedir
-                builder.requestChecksumCalculation(RequestChecksumCalculation.WHEN_REQUIRED)
-                        .responseChecksumValidation(ResponseChecksumValidation.WHEN_REQUIRED);
-            }
-            if (s3.region() != null) {
-                builder.region(Region.of(s3.region()));
-            }
-            if (s3.endpoint() != null) {
-                builder.endpointOverride(s3.endpoint());
-            }
-            return builder.build();
-        }
-
-        /** Mesma configuração do cliente: o presigner não herda endpoint nem path-style do S3Client. */
-        @Bean
-        @ConditionalOnMissingBean
-        S3Presigner s3Presigner(StorageProperties properties, AwsCredentialsProvider s3CredentialsProvider) {
-            StorageProperties.S3 s3 = properties.s3();
-            S3Presigner.Builder builder = S3Presigner.builder()
-                    .serviceConfiguration(S3Configuration.builder().pathStyleAccessEnabled(s3.pathStyle()).build())
-                    .credentialsProvider(s3CredentialsProvider);
-            if (s3.region() != null) {
-                builder.region(Region.of(s3.region()));
-            }
-            if (s3.endpoint() != null) {
-                builder.endpointOverride(s3.endpoint());
-            }
-            return builder.build();
-        }
-
-        @Bean
-        BucketStorageFactory s3BucketStorageFactory(S3Client s3Client, S3Presigner s3Presigner,
-                                                    StorageProperties properties) {
+        BucketStorageFactory s3BucketStorageFactory(BeanFactory beans, StorageProperties properties) {
             S3ObjectStorage.Checksum checksum = S3ObjectStorage.Checksum.valueOf(properties.s3().checksum().name());
-            return bucket -> new S3ObjectStorage(s3Client, s3Presigner, bucket, checksum);
+            return bucket -> new S3ObjectStorage(
+                    StorageClientBeans.require(beans, S3Client.class, StorageProperties.Provider.S3),
+                    StorageClientBeans.require(beans, S3Presigner.class, StorageProperties.Provider.S3), bucket, checksum);
         }
 
         @Bean
@@ -188,31 +120,12 @@ public class StorageAutoConfiguration {
     @ConditionalOnProperty(prefix = PREFIX, name = "provider", havingValue = "gcs")
     static class GcsStorageConfiguration {
 
+        /** Os clientes são da aplicação e só são resolvidos ao criar o primeiro {@code ObjectStorage}. */
         @Bean
-        @ConditionalOnMissingBean
-        HttpStorageOptions gcsStorageOptions(StorageProperties properties) {
-            HttpStorageOptions.Builder builder = HttpStorageOptions.newBuilder();
-            if (properties.gcs().projectId() != null) {
-                builder.setProjectId(properties.gcs().projectId());
-            }
-            return builder.build();
-        }
-
-        @Bean
-        @ConditionalOnMissingBean
-        Storage gcsStorage(HttpStorageOptions options) {
-            return options.getService();
-        }
-
-        @Bean
-        @ConditionalOnMissingBean
-        MultipartUploadClient gcsMultipartUploadClient(HttpStorageOptions options) {
-            return MultipartUploadClient.create(MultipartUploadSettings.of(options));
-        }
-
-        @Bean
-        BucketStorageFactory gcsBucketStorageFactory(Storage gcsStorage, MultipartUploadClient gcsMultipartUploadClient) {
-            return bucket -> new GcsObjectStorage(gcsStorage, gcsMultipartUploadClient, bucket);
+        BucketStorageFactory gcsBucketStorageFactory(BeanFactory beans) {
+            return bucket -> new GcsObjectStorage(
+                    StorageClientBeans.require(beans, Storage.class, StorageProperties.Provider.GCS),
+                    StorageClientBeans.require(beans, MultipartUploadClient.class, StorageProperties.Provider.GCS), bucket);
         }
 
         @Bean
@@ -228,56 +141,42 @@ public class StorageAutoConfiguration {
     @ConditionalOnProperty(prefix = PREFIX, name = "provider", havingValue = "azure")
     static class AzureStorageConfiguration {
 
-        private static final String AZURE_CREDENTIAL = "com.azure.identity.DefaultAzureCredentialBuilder";
-
-        /** Cliente da conta, sem container: a aplicação deriva um {@code BlobContainerClient} por container. */
+        /**
+         * O {@code BlobServiceClient} é da aplicação; o starter deriva um {@code BlobContainerClient} por container e
+         * não publica nem aceita um {@code BlobContainerClient} da aplicação.
+         */
         @Bean
-        @ConditionalOnMissingBean
-        BlobServiceClient azureBlobServiceClient(StorageProperties properties,
-                                                 ConfigurableListableBeanFactory beanFactory) {
-            StorageProperties.Azure azure = properties.azure();
-            BlobServiceClientBuilder builder = new BlobServiceClientBuilder();
-            if (azure.connectionString() != null) {
-                builder.connectionString(azure.connectionString());
-            } else if (azure.endpoint() != null) {
-                // azure-identity é opcional: sem ela, o NoClassDefFoundError não diria o que falta
-                if (!ClassUtils.isPresent(AZURE_CREDENTIAL, beanFactory.getBeanClassLoader())) {
-                    throw new IllegalStateException("storage.azure.endpoint usa DefaultAzureCredential: adicione a "
-                            + "dependência com.azure:azure-identity, ou use storage.azure.connection-string");
-                }
-                builder.endpoint(azure.endpoint()).credential(new DefaultAzureCredentialBuilder().build());
-            } else {
-                throw new IllegalStateException(
-                        "Defina storage.azure.connection-string ou storage.azure.endpoint");
-            }
-            return builder.buildClient();
-        }
-
-        /** Não é criado com {@code ObjectStorage} da aplicação: aí {@code storage.bucket} pode faltar. */
-        @Bean
-        @ConditionalOnMissingBean({BlobContainerClient.class, ObjectStorage.class})
-        @Conditional(SingleBucket.class)
-        BlobContainerClient azureBlobContainerClient(BlobServiceClient azureBlobServiceClient,
-                                                     StorageProperties properties) {
-            return azureBlobServiceClient.getBlobContainerClient(requireBucket(properties));
-        }
-
-        @Bean
-        BucketStorageFactory azureBucketStorageFactory(BlobServiceClient azureBlobServiceClient,
-                                                       StorageProperties properties) {
-            return bucket -> azureStorage(azureBlobServiceClient.getBlobContainerClient(bucket), properties);
+        BucketStorageFactory azureBucketStorageFactory(BeanFactory beans, StorageProperties properties) {
+            return bucket -> azureStorage(blobServiceClient(beans).getBlobContainerClient(bucket), properties);
         }
 
         @Bean
         @ConditionalOnMissingBean(ObjectStorage.class)
         @Conditional(SingleBucket.class)
-        ObjectStorage azureObjectStorage(BlobContainerClient azureBlobContainerClient, StorageProperties properties) {
-            return azureStorage(azureBlobContainerClient, properties);
+        ObjectStorage azureObjectStorage(BucketStorageFactory azureBucketStorageFactory, StorageProperties properties) {
+            return azureBucketStorageFactory.create(requireBucket(properties));
         }
 
-        /** O tipo de SAS segue a autenticação: chave da conta com connection string, senão user delegation. */
+        private static BlobServiceClient blobServiceClient(BeanFactory beans) {
+            try {
+                return StorageClientBeans.require(beans, BlobServiceClient.class, StorageProperties.Provider.AZURE);
+            } catch (IllegalStateException e) {
+                if (e.getMessage().contains("declare um bean")) {
+                    throw new IllegalStateException(e.getMessage() + "; o starter deriva o BlobContainerClient por "
+                            + "dentro, e um BlobContainerClient da aplicação não é mais usado");
+                }
+                throw e;
+            }
+        }
+
+        /** O tipo de SAS vem de {@code storage.azure.sas}: o starter não conhece a autenticação do cliente. */
         private static ObjectStorage azureStorage(BlobContainerClient container, StorageProperties properties) {
-            return properties.azure().connectionString() != null
+            StorageProperties.Azure.Sas sas = properties.azure().sas();
+            if (sas == null) {
+                throw new IllegalStateException("storage.azure.sas é obrigatório quando storage.provider=azure "
+                        + "(shared-key ou user-delegation)");
+            }
+            return sas == StorageProperties.Azure.Sas.SHARED_KEY
                     ? AzureBlobObjectStorage.withSharedKey(container)
                     : AzureBlobObjectStorage.withUserDelegation(container);
         }
@@ -288,24 +187,18 @@ public class StorageAutoConfiguration {
     @ConditionalOnProperty(prefix = PREFIX, name = "provider", havingValue = "oci")
     static class OciStorageConfiguration {
 
+        /**
+         * O cliente é da aplicação e só é resolvido ao criar o primeiro {@code ObjectStorage}. Namespace consultado na
+         * criação de cada storage (uma chamada por bucket, na inicialização) quando não está em {@code storage.oci.namespace}.
+         */
         @Bean
-        @ConditionalOnMissingBean(com.oracle.bmc.objectstorage.ObjectStorage.class)
-        ObjectStorageClient ociObjectStorageClient(StorageProperties properties) throws IOException {
-            StorageProperties.Oci oci = properties.oci();
-            ConfigFileAuthenticationDetailsProvider auth = oci.configFile() == null
-                    ? new ConfigFileAuthenticationDetailsProvider(oci.profile())
-                    : new ConfigFileAuthenticationDetailsProvider(oci.configFile(), oci.profile());
-            return ObjectStorageClient.builder().build(auth);
-        }
-
-        /** Namespace consultado na criação de cada storage (uma chamada por bucket, na inicialização). */
-        @Bean
-        BucketStorageFactory ociBucketStorageFactory(com.oracle.bmc.objectstorage.ObjectStorage ociObjectStorageClient,
-                                                     StorageProperties properties) {
+        BucketStorageFactory ociBucketStorageFactory(BeanFactory beans, StorageProperties properties) {
             return bucket -> {
+                com.oracle.bmc.objectstorage.ObjectStorage client = StorageClientBeans.require(beans,
+                        com.oracle.bmc.objectstorage.ObjectStorage.class, StorageProperties.Provider.OCI);
                 String namespace = properties.oci().namespace() != null ? properties.oci().namespace()
-                        : ociObjectStorageClient.getNamespace(GetNamespaceRequest.builder().build()).getValue();
-                return new OciObjectStorage(ociObjectStorageClient, namespace, bucket);
+                        : client.getNamespace(GetNamespaceRequest.builder().build()).getValue();
+                return new OciObjectStorage(client, namespace, bucket);
             };
         }
 
@@ -343,84 +236,24 @@ public class StorageAutoConfiguration {
     }
 
     /**
-     * Uma {@link SftpConnection} para todos os buckets, que limita os canais abertos e reconecta quando a
-     * conexão cai. Sem {@link SSHClient} da aplicação, o starter conecta e autentica por properties; com um,
-     * usa-o como está, sem reconectar. Cada bucket vira a subpasta {@code <root>/<bucket>} no servidor.
+     * A {@link SftpConnection} é da aplicação e serve a todos os buckets: ela limita os canais abertos e, criada com
+     * {@code reconnecting}, reconecta quando a conexão cai. Cada bucket vira a subpasta {@code <root>/<bucket>} no
+     * servidor.
      */
     @Configuration(proxyBeanMethods = false)
     @ConditionalOnClass(SftpObjectStorage.class)
     @ConditionalOnProperty(prefix = PREFIX, name = "provider", havingValue = "sftp")
     static class SftpStorageConfiguration {
 
-        @Bean(destroyMethod = "close")
-        @ConditionalOnMissingBean
-        SftpConnection sftpConnection(ObjectProvider<SSHClient> applicationClient, StorageProperties properties)
-                throws IOException {
-            SSHClient own = applicationClient.getIfAvailable();
-            if (own != null) {
-                return SftpConnection.of(own);
-            }
-            StorageProperties.Sftp sftp = properties.sftp();
-            if (sftp.host() == null) {
-                throw new IllegalStateException("storage.sftp.host é obrigatório quando storage.provider=sftp");
-            }
-            if (sftp.username() == null) {
-                throw new IllegalStateException("storage.sftp.username é obrigatório quando storage.provider=sftp");
-            }
-            if (sftp.password() == null && sftp.privateKeyPath() == null) {
-                throw new IllegalStateException("Defina storage.sftp.password ou storage.sftp.private-key-path");
-            }
-            requireSftpRoot(properties);   // valida tudo antes de abrir conexão de rede
-            return SftpConnection.reconnecting(() -> connect(sftp), sftp.maxChannels());
-        }
-
-        private static SSHClient connect(StorageProperties.Sftp sftp) throws IOException {
-            SSHClient client = new SSHClient();
-            configureHostKeyVerification(client, sftp);
-            client.getConnection().getKeepAlive().setKeepAliveInterval((int) sftp.keepAlive().toSeconds());
-            try {
-                client.connect(sftp.host(), sftp.port());
-                if (sftp.password() != null) {
-                    client.authPassword(sftp.username(), sftp.password());
-                } else {
-                    client.authPublickey(sftp.username(), sftp.privateKeyPath());
-                }
-            } catch (IOException | RuntimeException e) {
-                closeQuietly(client);
-                throw e;
-            }
-            return client;
-        }
-
-        /** Sem {@code known-hosts} nem {@code insecure-trust-all-hosts}, falha cedo em vez de aceitar qualquer host key. */
-        private static void configureHostKeyVerification(SSHClient client, StorageProperties.Sftp sftp) throws IOException {
-            if (sftp.knownHosts() != null) {
-                client.loadKnownHosts(new File(sftp.knownHosts()));
-            } else if (sftp.insecureTrustAllHosts()) {
-                client.addHostKeyVerifier(new PromiscuousVerifier());
-            } else {
-                try {
-                    client.loadKnownHosts();
-                } catch (IOException e) {
-                    throw new IllegalStateException(
-                            "Nenhum known_hosts encontrado (~/.ssh/known_hosts); defina storage.sftp.known-hosts "
-                                    + "ou storage.sftp.insecure-trust-all-hosts=true (não recomendado fora de dev/teste)", e);
-                }
-            }
-        }
-
-        private static void closeQuietly(SSHClient client) {
-            try {
-                client.close();
-            } catch (IOException ignored) {
-                // a falha que importa é a original da conexão/autenticação
-            }
-        }
-
+        /** A {@code SftpConnection} é da aplicação e só é resolvida ao criar o primeiro {@code ObjectStorage}. */
         @Bean
-        BucketStorageFactory sftpBucketStorageFactory(SftpConnection sftpConnection, StorageProperties properties) {
-            String root = requireSftpRoot(properties);
-            return bucket -> new SftpObjectStorage(sftpConnection, root + "/" + bucket);
+        BucketStorageFactory sftpBucketStorageFactory(BeanFactory beans, StorageProperties properties) {
+            return bucket -> {
+                String root = requireSftpRoot(properties);
+                return new SftpObjectStorage(
+                        StorageClientBeans.require(beans, SftpConnection.class, StorageProperties.Provider.SFTP),
+                        root + "/" + bucket);
+            };
         }
 
         @Bean
@@ -451,6 +284,22 @@ public class StorageAutoConfiguration {
     static Map<String, String> buckets(Environment environment) {
         return Binder.get(environment).bind(PREFIX + ".buckets", Bindable.mapOf(String.class, String.class))
                 .orElse(Map.of());
+    }
+
+    /** Falha o startup com as chaves de conexão removidas de {@code storage.*}, haja ou não provedor. */
+    static class RemovedKeysRegistrar implements ImportBeanDefinitionRegistrar, EnvironmentAware {
+
+        private Environment environment;
+
+        @Override
+        public void setEnvironment(Environment environment) {
+            this.environment = environment;
+        }
+
+        @Override
+        public void registerBeanDefinitions(AnnotationMetadata metadata, BeanDefinitionRegistry registry) {
+            RemovedKeys.check(environment);
+        }
     }
 
     /**
