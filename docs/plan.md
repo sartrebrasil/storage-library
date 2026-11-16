@@ -6,6 +6,10 @@
 - Distribuição: somente `mvn install` local (sem repositório remoto).
 - API síncrona (paralelismo com virtual threads); Java 21.
 - Integração: Java puro + starter Spring Boot 3.5.x.
+- Clientes nativos: a aplicação declara o objeto raiz de cada provedor (`S3Client` + `S3Presigner`, `Storage` +
+  `MultipartUploadClient`, `BlobServiceClient`, cliente OCI, `SftpConnection`); o starter só monta o `ObjectStorage` por
+  bucket e não cria credencial, cliente nem presigner. Chave de conexão antiga derruba o startup (design de
+  [2026-11-15](superpowers/specs/2026-11-15-clientes-nativos-da-aplicacao-design.md)).
 - Sem credenciais de CI para GCS e OCI: contrato desses adapters roda com
   mocks no build e contra bucket real só manualmente.
 
@@ -61,6 +65,7 @@ Exceções: `StorageException` > `ObjectNotFoundException`,
 | F3 | GCS e OCI completos | Mocks verdes; contrato manual em bucket real | Mocks verdes; contrato em bucket real pendente |
 | F4 | Starter Spring Boot 3.5.x | Teste de auto-configuração por provedor | Concluída |
 | F5 | `mvn install` da 0.1.0 e migração do report-streaming | Exemplo roda contra MinIO e Azurite | Migrado; exemplo verificado contra MinIO |
+| F6 | Clientes nativos fornecidos pela aplicação ([plano](superpowers/plans/2026-11-15-clientes-nativos-da-aplicacao.md)) | Starter sem criar credencial, cliente nem presigner; exemplos por provedor | Concluída |
 
 Planos em andamento ficam em [`docs/plans/active/`](plans/active/):
 

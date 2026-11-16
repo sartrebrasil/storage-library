@@ -127,7 +127,8 @@ O adapter pede checksum CRC32 em `put` e no multipart, e o SDK (>= 2.30) calcula
 conta própria. Backends que não suportam checksum flexível falham com isso. O LocalStack 3.0,
 por exemplo, responde 500 ("'NoneType' object has no attribute 'to_bytes'") a qualquer
 upload de corpo vazio. Nesses casos use `S3ObjectStorage.Checksum.NONE` com o cliente em
-`WHEN_REQUIRED`, ou `storage.s3.checksum: none` no starter, que configura os dois:
+`WHEN_REQUIRED`. Com o starter, `storage.s3.checksum: none` configura só o adapter; o cliente da
+aplicação precisa do mesmo ajuste:
 
 ```java
 S3Client s3 = S3Client.builder()
@@ -287,34 +288,91 @@ storage:
   provider: s3              # s3 | gcs | azure | oci | filesystem | sftp; sem valor, nenhum bean é criado
   bucket: reports           # no Azure, o container; vários: buckets (abaixo)
   s3:
-    region: sa-east-1
-    endpoint: http://localhost:9000   # opcional (MinIO/LocalStack)
-    path-style: true
-    access-key: minioadmin            # opcional, junto com secret-key; vazia conta como ausente
-    secret-key: minioadmin
-    checksum: crc32                   # crc32 (padrão) | none, para backends sem checksum flexível
-    async-credential-update: true     # padrão; sem access-key, renova credenciais temporárias em fundo
+    checksum: crc32         # crc32 (padrão) | none, para backends sem checksum flexível
   azure:
-    connection-string: UseDevelopmentStorage=true   # ou endpoint + DefaultAzureCredential
-    endpoint: https://conta.blob.core.windows.net
-  gcs:
-    project-id: meu-projeto                         # opcional (ADC)
+    sas: shared-key         # shared-key | user-delegation; obrigatório no Azure, sem padrão
   oci:
-    profile: DEFAULT                                # ~/.oci/config ou config-file
-    namespace: meu-namespace                        # opcional (consultado na API)
+    namespace: meu-namespace   # opcional (consultado na API)
   filesystem:
-    root: /var/data/oobj-storage                    # cada bucket vira uma subpasta de root
+    root: /var/data/oobj-storage   # cada bucket vira uma subpasta de root
   sftp:
-    host: sftp.exemplo.com.br
-    port: 22                                        # padrão
-    username: oobj
-    password: ${SFTP_PASSWORD}                      # ou private-key-path, nunca os dois
-    root: /reports                                  # cada bucket vira uma subpasta de root
-    known-hosts: /etc/ssh/known_hosts                # sem valor, tenta ~/.ssh/known_hosts
-    insecure-trust-all-hosts: false                  # true pula a verificação de host key (só dev/teste)
-    keep-alive: 30s                                  # padrão; mantém a sessão ociosa viva, 0 desliga
-    max-channels: 8                                  # padrão; canais simultâneos, abaixo do MaxSessions (10 no OpenSSH)
+    root: /reports          # cada bucket vira uma subpasta de root
 ```
+
+A conexão com o provedor (credenciais, região, endpoint, timeouts) **não** é configurada aqui: é da aplicação.
+
+### Clientes nativos por provedor
+
+O starter não cria credencial, cliente nem presigner. A aplicação declara o objeto raiz de cada provedor, e o starter
+monta o `ObjectStorage` de cada bucket sobre ele:
+
+| `storage.provider` | A aplicação declara | O starter deriva | Exemplo |
+|---|---|---|---|
+| `s3` | `S3Client` e `S3Presigner` | um `S3ObjectStorage` por bucket | [`S3ClientsExample`](storage-spring-boot-starter/src/test/java/com/example/storage/spring/exemplos/S3ClientsExample.java) |
+| `gcs` | `Storage` e `MultipartUploadClient` | um `GcsObjectStorage` por bucket | [`GcsClientsExample`](storage-spring-boot-starter/src/test/java/com/example/storage/spring/exemplos/GcsClientsExample.java) |
+| `azure` | `BlobServiceClient` | um `BlobContainerClient` e um `AzureBlobObjectStorage` por container | [`AzureClientsExample`](storage-spring-boot-starter/src/test/java/com/example/storage/spring/exemplos/AzureClientsExample.java) |
+| `oci` | `com.oracle.bmc.objectstorage.ObjectStorage` | um `OciObjectStorage` por bucket (namespace) | [`OciClientsExample`](storage-spring-boot-starter/src/test/java/com/example/storage/spring/exemplos/OciClientsExample.java) |
+| `sftp` | `SftpConnection` | um `SftpObjectStorage` por subpasta | [`SftpClientsExample`](storage-spring-boot-starter/src/test/java/com/example/storage/spring/exemplos/SftpClientsExample.java) |
+| `filesystem` | nada | um `FileSystemObjectStorage` por subpasta | (sem cliente) |
+
+Cada exemplo tem a forma de produção (cadeia padrão de credenciais, identidade gerenciada, `known_hosts`) e, no S3 e no
+Azure, a de emulador (MinIO e Azurite). São classes de teste do starter: os testes de auto-configuração as usam, então
+o que está lá compila e sobe.
+
+O bean é procurado pelo tipo; com mais de um, vale o `@Primary`. Sem o bean, o startup falha dizendo o provedor e o tipo
+(`storage.provider=s3: declare um bean software.amazon.awssdk.services.s3.S3Client`). Os clientes só são resolvidos ao
+criar o primeiro `ObjectStorage` do starter: com um `ObjectStorage` próprio, o starter não os exige. O starter nunca fecha
+o que a aplicação declarou. No S3, por exemplo:
+
+```java
+@Configuration(proxyBeanMethods = false)
+class StorageClients {
+
+    // um provider só para o cliente e o presigner; credenciais temporárias (IRSA, STS) renovadas em segundo plano
+    @Bean
+    AwsCredentialsProvider awsCredentialsProvider() {
+        return DefaultCredentialsProvider.builder().asyncCredentialUpdateEnabled(true).build();
+    }
+
+    @Bean
+    S3Client s3Client(AwsCredentialsProvider credentials) {
+        return S3Client.builder().credentialsProvider(credentials).build();   // região e endpoint: AWS_REGION, AWS_ENDPOINT_URL_S3
+    }
+
+    // o presigner não herda endpoint nem path-style do cliente: monte os dois com a mesma configuração
+    @Bean
+    S3Presigner s3Presigner(AwsCredentialsProvider credentials) {
+        return S3Presigner.builder().credentialsProvider(credentials).build();
+    }
+}
+```
+
+Para MinIO ou LocalStack, acrescente aos dois builders `endpointOverride(...)`, `region(...)` e o path-style
+(`forcePathStyle(true)` no cliente, `serviceConfiguration(S3Configuration.builder().pathStyleAccessEnabled(true).build())`
+no presigner). Com `storage.s3.checksum=none`, configure também o cliente com
+`requestChecksumCalculation(WHEN_REQUIRED)` e `responseChecksumValidation(WHEN_REQUIRED)`.
+
+### Migrando
+
+As chaves de conexão saíram de `storage.*`, e cada uma derruba o startup (mesmo sem `storage.provider`, e mesmo com um
+`ObjectStorage` próprio) com a lista completa e o que declarar no lugar. O Spring Boot ignora chave desconhecida por
+padrão; sem essa falha, um `storage.s3.endpoint` descartado faria a aplicação falar com a AWS real em vez do LocalStack.
+
+| Antes | Agora |
+|---|---|
+| `storage.s3.region`, `endpoint`, `path-style`, `access-key`, `secret-key`, `async-credential-update` | Beans `S3Client` e `S3Presigner` (e o `AwsCredentialsProvider` que você montar) |
+| `storage.gcs.project-id` | Beans `Storage` e `MultipartUploadClient`, montados com as `HttpStorageOptions` da aplicação |
+| `storage.azure.connection-string`, `endpoint` | Bean `BlobServiceClient`. **Novo:** `storage.azure.sas` (`shared-key` ou `user-delegation`) é obrigatório quando o starter cria o `ObjectStorage` |
+| `storage.oci.config-file`, `profile` | Bean `com.oracle.bmc.objectstorage.ObjectStorage`; `storage.oci.namespace` continua |
+| `storage.sftp.host`, `port`, `username`, `password`, `private-key-path`, `known-hosts`, `insecure-trust-all-hosts`, `keep-alive`, `max-channels` | Bean `SftpConnection` (um `SSHClient` da aplicação não é mais aceito no lugar); `storage.sftp.root` continua |
+| Bean `AwsCredentialsProvider`, `HttpStorageOptions` ou `BlobContainerClient` da aplicação, reaproveitado pelo starter | Não há mais: o starter só usa o objeto raiz da tabela acima. Um `BlobContainerClient` da aplicação não é mais usado |
+
+### Limites conhecidos
+
+- O starter não detecta um presigner montado com configuração diferente da do cliente (endpoint ou path-style): o exemplo do
+  S3 monta os dois com os mesmos argumentos.
+- O exemplo do SFTP autentica por senha; para chave privada, troque o `authPassword` por `authPublickey`.
+- GCS e OCI não têm emulador nos testes: os exemplos deles têm só a forma de produção.
 
 Com o Actuator no classpath, o starter registra `storageHealthIndicator` (chave `storage`
 em `/actuator/health`), que chama `checkAccess()`. Vale também para um `ObjectStorage`
@@ -426,15 +484,8 @@ sum by (storage, outcome) (rate(storage_operations_seconds_count{outcome=~"acces
 Os nomes de meter, as chaves de tag e os valores de `operation` e `outcome` acima são contrato:
 `StorageMetricsContractTest` os fixa, e uma mudança deve atualizar o teste e este README.
 
-No S3, o cliente e o presigner usam o mesmo bean `AwsCredentialsProvider`: credencial
-estática com `access-key`, senão a cadeia padrão da AWS. Na cadeia padrão, credenciais
-temporárias (IRSA, STS, metadata da instância) são renovadas numa thread de fundo antes de
-expirarem (`storage.s3.async-credential-update`, ligado por padrão), então nenhuma requisição
-espera a renovação. Um `AwsCredentialsProvider` da aplicação substitui o do starter.
-
-Injete `ObjectStorage`. Clientes do SDK declarados pela aplicação (`S3Client`,
-`S3Presigner`, `BlobServiceClient`, `BlobContainerClient`, `HttpStorageOptions`, cliente OCI)
-são reaproveitados; um `ObjectStorage` próprio desliga a auto-configuração.
+Injete `ObjectStorage`. Um `ObjectStorage` próprio desliga a auto-configuração, e aí o starter não exige os clientes
+do provedor.
 
 Vários buckets: use `storage.buckets` no lugar de `storage.bucket` (os dois juntos falham na
 inicialização). Cada entrada vira um bean `<nome>ObjectStorage` com qualifier `<nome>`, todos
@@ -452,26 +503,7 @@ storage:
 ReportService(@Qualifier("reports") ObjectStorage reports) { ... }
 ```
 
-Buckets com configuração diferente (outra conta, região ou provedor): declare um
-`ObjectStorage` por bucket, reaproveitando os clientes do starter (`S3Client` + `S3Presigner`,
-`Storage`, `BlobServiceClient`, cliente OCI) ou os seus. No Azure, derive cada container com
-`AzureBlobObjectStorage.withSharedKey(blobServiceClient.getBlobContainerClient("reports"))`
-(ou `withUserDelegation`, com `endpoint`). No Azure,
-com connection string o SAS usa a chave da conta; com `endpoint`, user delegation
-(requer `azure-identity` no classpath).
-
-## Testes
-
-`mvn install` roda os testes de contrato contra MinIO, LocalStack 3.0, Azurite e um servidor
-OpenSSH sftp-server real (imagem `atmoz/sftp`) via Testcontainers (pulados sem Docker). GCS e
-OCI não têm emulador compatível: são cobertos por testes com mocks e assinatura local real, e por um
-contrato opt-in contra bucket real (`GcsBucketContractTest` com `STORAGE_GCS_BUCKET` e as Application
-Default Credentials; `OciBucketContractTest` com `STORAGE_OCI_BUCKET` e o `~/.oci/config`, perfil em
-`STORAGE_OCI_PROFILE`). Sem as variáveis, esses contratos aparecem como pulados. Todo contrato apaga os
-objetos que criou, exceto os de retenção, que ficam presos por alguns minutos.
-
-Os testes de retenção (`supportsRetention()` no contrato) rodam no `InMemoryObjectStorage`, no MinIO
-com bucket com Object Lock e, opt-in, em buckets reais: `GcsRetentionContractTest`
-(`STORAGE_GCS_RETENTION_BUCKET`) e `AzureImmutableContainerContractTest`
-(`STORAGE_AZURE_IMMUTABLE_CONNECTION_STRING` e `STORAGE_AZURE_IMMUTABLE_CONTAINER`). Use buckets
-dedicados, com limpeza por lifecycle.
+Buckets com configuração diferente (outra conta, região ou provedor): declare um `ObjectStorage` por bucket, com os
+clientes que quiser; com mais de um cliente do mesmo tipo, o `@Primary` marca o que o starter usa. No Azure, derive cada
+container com `AzureBlobObjectStorage.withSharedKey(blobServiceClient.getBlobContainerClient("reports"))` (ou
+`withUserDelegation`).
