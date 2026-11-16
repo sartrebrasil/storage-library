@@ -49,16 +49,7 @@ import org.springframework.core.env.Environment;
 import org.springframework.core.type.AnnotatedTypeMetadata;
 import org.springframework.core.type.AnnotationMetadata;
 import org.springframework.util.ClassUtils;
-import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
-import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
-import software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider;
-import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
-import software.amazon.awssdk.core.checksums.RequestChecksumCalculation;
-import software.amazon.awssdk.core.checksums.ResponseChecksumValidation;
-import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.s3.S3Client;
-import software.amazon.awssdk.services.s3.S3ClientBuilder;
-import software.amazon.awssdk.services.s3.S3Configuration;
 import software.amazon.awssdk.services.s3.presigner.S3Presigner;
 
 import java.io.File;
@@ -117,62 +108,13 @@ public class StorageAutoConfiguration {
     @ConditionalOnProperty(prefix = PREFIX, name = "provider", havingValue = "s3")
     static class S3StorageConfiguration {
 
-        /**
-         * Um provider só, compartilhado pelo cliente e pelo presigner: credencial estática com
-         * {@code access-key}, senão a cadeia padrão da AWS (variáveis, IRSA, perfil, metadata),
-         * com renovação em fundo das credenciais temporárias ({@code async-credential-update}).
-         */
+        /** Os clientes são da aplicação e só são resolvidos ao criar o primeiro {@code ObjectStorage}. */
         @Bean
-        @ConditionalOnMissingBean
-        AwsCredentialsProvider s3CredentialsProvider(StorageProperties properties) {
-            StorageProperties.S3 s3 = properties.s3();
-            return s3.accessKey() != null
-                    ? StaticCredentialsProvider.create(AwsBasicCredentials.create(s3.accessKey(), s3.secretKey()))
-                    : DefaultCredentialsProvider.builder().asyncCredentialUpdateEnabled(s3.asyncCredentialUpdate()).build();
-        }
-
-        @Bean
-        @ConditionalOnMissingBean
-        S3Client s3Client(StorageProperties properties, AwsCredentialsProvider s3CredentialsProvider) {
-            StorageProperties.S3 s3 = properties.s3();
-            S3ClientBuilder builder = S3Client.builder().forcePathStyle(s3.pathStyle())
-                    .credentialsProvider(s3CredentialsProvider);
-            if (s3.checksum() == StorageProperties.S3.Checksum.NONE) {
-                // Sem isso o SDK (>= 2.30) calcula CRC32 sozinho, mesmo sem o adapter pedir
-                builder.requestChecksumCalculation(RequestChecksumCalculation.WHEN_REQUIRED)
-                        .responseChecksumValidation(ResponseChecksumValidation.WHEN_REQUIRED);
-            }
-            if (s3.region() != null) {
-                builder.region(Region.of(s3.region()));
-            }
-            if (s3.endpoint() != null) {
-                builder.endpointOverride(s3.endpoint());
-            }
-            return builder.build();
-        }
-
-        /** Mesma configuração do cliente: o presigner não herda endpoint nem path-style do S3Client. */
-        @Bean
-        @ConditionalOnMissingBean
-        S3Presigner s3Presigner(StorageProperties properties, AwsCredentialsProvider s3CredentialsProvider) {
-            StorageProperties.S3 s3 = properties.s3();
-            S3Presigner.Builder builder = S3Presigner.builder()
-                    .serviceConfiguration(S3Configuration.builder().pathStyleAccessEnabled(s3.pathStyle()).build())
-                    .credentialsProvider(s3CredentialsProvider);
-            if (s3.region() != null) {
-                builder.region(Region.of(s3.region()));
-            }
-            if (s3.endpoint() != null) {
-                builder.endpointOverride(s3.endpoint());
-            }
-            return builder.build();
-        }
-
-        @Bean
-        BucketStorageFactory s3BucketStorageFactory(S3Client s3Client, S3Presigner s3Presigner,
-                                                    StorageProperties properties) {
+        BucketStorageFactory s3BucketStorageFactory(BeanFactory beans, StorageProperties properties) {
             S3ObjectStorage.Checksum checksum = S3ObjectStorage.Checksum.valueOf(properties.s3().checksum().name());
-            return bucket -> new S3ObjectStorage(s3Client, s3Presigner, bucket, checksum);
+            return bucket -> new S3ObjectStorage(
+                    StorageClientBeans.require(beans, S3Client.class, StorageProperties.Provider.S3),
+                    StorageClientBeans.require(beans, S3Presigner.class, StorageProperties.Provider.S3), bucket, checksum);
         }
 
         @Bean

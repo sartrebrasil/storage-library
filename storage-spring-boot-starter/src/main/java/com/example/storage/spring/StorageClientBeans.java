@@ -18,9 +18,10 @@ final class StorageClientBeans {
         T bean;
         try {
             bean = beans.getBeanProvider(type).getIfAvailable();
-        } catch (NoUniqueBeanDefinitionException e) {
+        } catch (NoUniqueBeanDefinitionException ignored) {
+            // sem a causa encadeada: ela viraria a "causa raiz" e esconderia a mensagem do starter
             throw new IllegalStateException(prefix + "há mais de um bean " + type.getName()
-                    + "; marque um com @Primary", e);
+                    + "; marque um com @Primary");
         }
         if (bean == null) {
             throw new IllegalStateException(prefix + "declare um bean " + type.getName());

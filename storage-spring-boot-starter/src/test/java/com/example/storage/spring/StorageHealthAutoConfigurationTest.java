@@ -3,6 +3,7 @@ package com.example.storage.spring;
 import com.example.storage.ObjectStorage;
 import com.example.storage.StorageException;
 import com.example.storage.memory.InMemoryObjectStorage;
+import com.example.storage.spring.exemplos.S3ClientsExample;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.health.contributor.CompositeHealthContributor;
 import org.springframework.boot.health.contributor.HealthIndicator;
@@ -58,9 +59,8 @@ class StorageHealthAutoConfigurationTest {
 
     @Test
     void storageBucketsEntramNoIndicadorComposto() {
-        runner.withPropertyValues("storage.provider=s3", "storage.s3.region=us-east-1",
-                        "storage.s3.access-key=a", "storage.s3.secret-key=b",
-                        "storage.buckets.reports=r", "storage.buckets.artifacts=a")
+        runner.withUserConfiguration(S3ClientsExample.Emulador.class)
+                .withPropertyValues("storage.provider=s3", "storage.buckets.reports=r", "storage.buckets.artifacts=a")
                 .run(context -> {
                     var composite = context.getBean("storageHealthIndicator", CompositeHealthContributor.class);
                     assertThat(composite.getContributor("reportsObjectStorage")).isNotNull();

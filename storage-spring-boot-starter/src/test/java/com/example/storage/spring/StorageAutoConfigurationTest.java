@@ -10,6 +10,7 @@ import com.example.storage.memory.InMemoryObjectStorage;
 import com.example.storage.oci.OciObjectStorage;
 import com.example.storage.aws.S3ObjectStorage;
 import com.example.storage.sftp.SftpObjectStorage;
+import com.example.storage.spring.exemplos.S3ClientsExample;
 import com.google.cloud.NoCredentials;
 import com.google.cloud.storage.HttpStorageOptions;
 import com.oracle.bmc.objectstorage.responses.GetNamespaceResponse;
@@ -20,10 +21,6 @@ import org.springframework.boot.test.context.FilteredClassLoader;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
-import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
-import software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider;
-import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.presigner.S3Presigner;
 
@@ -46,26 +43,16 @@ class StorageAutoConfigurationTest {
     @TempDir
     Path tempDir;
 
-    private static final String[] MINIO = {
-            "storage.provider=s3", "storage.bucket=reports",
-            "storage.s3.region=us-east-1", "storage.s3.endpoint=http://localhost:9000", "storage.s3.path-style=true",
-            "storage.s3.access-key=minioadmin", "storage.s3.secret-key=minioadmin"};
+    private static final String[] MINIO = {"storage.provider=s3", "storage.bucket=reports"};
+
+    /** O S3 com os clientes que a aplicação declararia (exemplo do emulador: MinIO em localhost:9000, path-style). */
+    private ApplicationContextRunner s3() {
+        return runner.withUserConfiguration(S3ClientsExample.Emulador.class).withPropertyValues(MINIO);
+    }
 
     @Test
     void semProviderNaoCriaStorage() {
         runner.run(context -> assertThat(context).doesNotHaveBean(ObjectStorage.class));
-    }
-
-    @Test
-    void s3CriaClienteEPresignerComAMesmaConfiguracao() {
-        runner.withPropertyValues(MINIO).run(context -> {
-            assertThat(context).hasSingleBean(S3Client.class).hasSingleBean(S3Presigner.class);
-            ObjectStorage storage = context.getBean(ObjectStorage.class);
-            assertThat(storage).isInstanceOf(S3ObjectStorage.class);
-            // Endpoint e path-style chegaram ao presigner (assinatura local, sem rede)
-            URI url = storage.presignGet("r.csv", Duration.ofMinutes(5));
-            assertThat(url.toString()).startsWith("http://localhost:9000/reports/r.csv?");
-        });
     }
 
     @Test
@@ -77,7 +64,7 @@ class StorageAutoConfigurationTest {
 
     @Test
     void bucketsCriaUmStoragePorEntradaComQualifier() {
-        runner.withPropertyValues(MINIO).withPropertyValues("storage.bucket=",
+        s3().withPropertyValues("storage.bucket=",
                         "storage.buckets.reports=oobj-reports", "storage.buckets.artifacts=oobj-artifacts")
                 .withUserConfiguration(QualifiedConsumer.class)
                 .run(context -> {
@@ -99,7 +86,7 @@ class StorageAutoConfigurationTest {
 
     @Test
     void bucketEBucketsJuntosFalham() {
-        runner.withPropertyValues(MINIO).withPropertyValues("storage.buckets.reports=oobj-reports").run(context ->
+        s3().withPropertyValues("storage.buckets.reports=oobj-reports").run(context ->
                 assertThat(context).hasFailed().getFailure()
                         .hasRootCauseMessage("Defina storage.bucket ou storage.buckets, não os dois"));
     }
@@ -112,88 +99,83 @@ class StorageAutoConfigurationTest {
     }
 
     @Test
-    void s3UsaUmSoProviderDeCredenciaisNoClienteENoPresigner() {
-        runner.withPropertyValues(MINIO).run(context -> {
-            AwsCredentialsProvider provider = context.getBean(AwsCredentialsProvider.class);
-            assertThat(provider).isInstanceOf(StaticCredentialsProvider.class);
-            assertThat(context.getBean(S3Client.class).serviceClientConfiguration().credentialsProvider())
-                    .isSameAs(provider);
+    void s3UsaClienteEPresignerDaAplicacao() {
+        s3().run(context -> {
+            assertThat(context).hasSingleBean(S3Client.class).hasSingleBean(S3Presigner.class);
+            ObjectStorage storage = context.getBean(ObjectStorage.class);
+            assertThat(storage).isInstanceOf(S3ObjectStorage.class);
+            // endpoint e path-style do presigner da aplicação (assinatura local, sem rede)
+            assertThat(storage.presignGet("r.csv", Duration.ofMinutes(5)).toString())
+                    .startsWith("http://localhost:9000/reports/r.csv?");
         });
     }
 
     @Test
-    void s3SemAccessKeyUsaCadeiaPadraoComRenovacaoEmFundo() {
-        runner.withPropertyValues("storage.provider=s3", "storage.bucket=reports", "storage.s3.region=us-east-1")
-                .run(context -> assertThat(context.getBean(AwsCredentialsProvider.class))
-                        .isInstanceOf(DefaultCredentialsProvider.class)
-                        .hasFieldOrPropertyWithValue("asyncCredentialUpdateEnabled", true));
+    void s3SemClientesFalhaComAMensagemDoProvedor() {
+        runner.withPropertyValues(MINIO).run(context -> assertThat(context).hasFailed().getFailure()
+                .hasRootCauseMessage("storage.provider=s3: declare um bean software.amazon.awssdk.services.s3.S3Client"));
     }
 
     @Test
-    void s3RenovacaoEmFundoPodeSerDesligada() {
-        runner.withPropertyValues("storage.provider=s3", "storage.bucket=reports", "storage.s3.region=us-east-1",
-                        "storage.s3.async-credential-update=false")
-                .run(context -> assertThat(context.getBean(AwsCredentialsProvider.class))
-                        .hasFieldOrPropertyWithValue("asyncCredentialUpdateEnabled", false));
-    }
-
-    @Test
-    void s3ComChavesVaziasUsaCadeiaPadrao() {
-        // o que chega de "access-key: ${REPORT_CREDENTIALS_ACCESS_KEY:}" sem a variável.
-        // Sem região no starter, o SDK a resolve pela cadeia padrão; aws.region isola o teste do ambiente.
-        System.setProperty("aws.region", "us-east-1");
-        try {
-            runner.withPropertyValues("storage.provider=s3", "storage.bucket=reports", "storage.s3.region=",
-                            "storage.s3.access-key=", "storage.s3.secret-key=")
-                    .run(context -> {
-                        assertThat(context).hasNotFailed();
-                        assertThat(context.getBean(AwsCredentialsProvider.class)).isInstanceOf(DefaultCredentialsProvider.class);
-                        assertThat(context.getBean(StorageProperties.class).s3().region()).isNull();
-                    });
-        } finally {
-            System.clearProperty("aws.region");
-        }
-    }
-
-    @Test
-    void s3ComSoUmaDasChavesFalhaComMensagemClara() {
-        runner.withPropertyValues("storage.provider=s3", "storage.bucket=reports", "storage.s3.region=us-east-1",
-                        "storage.s3.access-key=minioadmin")
+    void s3ComDoisClientesSemPrimaryFalha() {
+        s3().withBean("outroS3Client", S3Client.class, () -> mock(S3Client.class))
                 .run(context -> assertThat(context).hasFailed().getFailure().hasRootCauseMessage(
-                        "Defina storage.s3.access-key e storage.s3.secret-key juntas, ou nenhuma das duas"));
+                        "storage.provider=s3: há mais de um bean software.amazon.awssdk.services.s3.S3Client; "
+                                + "marque um com @Primary"));
     }
 
     @Test
-    void s3ReaproveitaProviderDaAplicacao() {
-        AwsCredentialsProvider own = StaticCredentialsProvider.create(AwsBasicCredentials.create("app", "app"));
-        runner.withPropertyValues(MINIO).withBean(AwsCredentialsProvider.class, () -> own).run(context ->
-                assertThat(context.getBean(S3Client.class).serviceClientConfiguration().credentialsProvider())
-                        .isSameAs(own));
+    void s3ComPrimaryUsaOPrimario() {
+        S3Client primary = mock(S3Client.class);
+        s3().withBean("outroS3Client", S3Client.class, () -> primary, definition -> definition.setPrimary(true))
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertThat(context.getBean(ObjectStorage.class)).hasFieldOrPropertyWithValue("s3", primary);
+                });
+    }
+
+    @Test
+    void objectStorageDaAplicacaoNaoExigeClientes() {
+        runner.withPropertyValues(MINIO).withBean(ObjectStorage.class, InMemoryObjectStorage::new)
+                .run(context -> assertThat(context).hasNotFailed());
+    }
+
+    @Test
+    void providerVazioNaoCriaClienteNenhum() {
+        java.util.concurrent.atomic.AtomicInteger created = new java.util.concurrent.atomic.AtomicInteger();
+        runner.withBean("s3Client", S3Client.class, () -> {
+                    created.incrementAndGet();
+                    return mock(S3Client.class);
+                }, definition -> definition.setLazyInit(true))
+                .run(context -> {
+                    assertThat(context).hasNotFailed().doesNotHaveBean(ObjectStorage.class);
+                    assertThat(created).hasValue(0);
+                });
     }
 
     @Test
     void s3ChecksumAceitaNoneERejeitaValorDesconhecido() {
-        runner.withPropertyValues(MINIO).withPropertyValues("storage.s3.checksum=none")
+        s3().withPropertyValues("storage.s3.checksum=none")
                 .run(context -> assertThat(context).hasSingleBean(S3ObjectStorage.class));
-        runner.withPropertyValues(MINIO).withPropertyValues("storage.s3.checksum=md5")
+        s3().withPropertyValues("storage.s3.checksum=md5")
                 .run(context -> assertThat(context).hasFailed());
     }
 
     @Test
     void providerAceitaMaiusculas() {
-        runner.withPropertyValues(MINIO).withPropertyValues("storage.provider=S3")
+        s3().withPropertyValues("storage.provider=S3")
                 .run(context -> assertThat(context).hasSingleBean(S3ObjectStorage.class));
     }
 
     @Test
     void semAdapterNoClasspathNaoCriaStorage() {
-        runner.withPropertyValues(MINIO).withClassLoader(new FilteredClassLoader(S3ObjectStorage.class))
+        s3().withClassLoader(new FilteredClassLoader(S3ObjectStorage.class))
                 .run(context -> assertThat(context).doesNotHaveBean(ObjectStorage.class));
     }
 
     @Test
     void storageDaAplicacaoDesligaAAutoConfiguracao() {
-        runner.withPropertyValues(MINIO).withBean(ObjectStorage.class, InMemoryObjectStorage::new).run(context -> {
+        s3().withBean(ObjectStorage.class, InMemoryObjectStorage::new).run(context -> {
             assertThat(context).hasSingleBean(ObjectStorage.class);
             assertThat(context.getBean(ObjectStorage.class)).isInstanceOf(InMemoryObjectStorage.class);
         });
