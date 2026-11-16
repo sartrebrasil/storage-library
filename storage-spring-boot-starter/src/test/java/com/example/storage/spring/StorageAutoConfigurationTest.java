@@ -10,9 +10,12 @@ import com.example.storage.memory.InMemoryObjectStorage;
 import com.example.storage.oci.OciObjectStorage;
 import com.example.storage.aws.S3ObjectStorage;
 import com.example.storage.sftp.SftpObjectStorage;
+import com.example.storage.spring.exemplos.GcsClientsExample;
 import com.example.storage.spring.exemplos.S3ClientsExample;
 import com.google.cloud.NoCredentials;
 import com.google.cloud.storage.HttpStorageOptions;
+import com.google.cloud.storage.MultipartUploadClient;
+import com.google.cloud.storage.Storage;
 import com.oracle.bmc.objectstorage.responses.GetNamespaceResponse;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -255,13 +258,20 @@ class StorageAutoConfigurationTest {
     }
 
     @Test
-    void gcsReaproveitaOpcoesDaAplicacao() {
-        HttpStorageOptions options = HttpStorageOptions.newBuilder()
-                .setProjectId("projeto").setCredentials(NoCredentials.getInstance()).build();
+    void gcsUsaStorageEMultipartDaAplicacao() {
+        HttpStorageOptions options = GcsClientsExample.options(NoCredentials.getInstance(), "projeto");
 
         runner.withPropertyValues("storage.provider=gcs", "storage.bucket=reports")
-                .withBean(HttpStorageOptions.class, () -> options)
+                .withBean(Storage.class, () -> GcsClientsExample.storage(options))
+                .withBean(MultipartUploadClient.class, () -> GcsClientsExample.multipart(options))
                 .run(context -> assertThat(context).hasSingleBean(GcsObjectStorage.class));
+    }
+
+    @Test
+    void gcsSemBeansFalhaComAMensagemDoProvedor() {
+        runner.withPropertyValues("storage.provider=gcs", "storage.bucket=reports")
+                .run(context -> assertThat(context).hasFailed().getFailure().hasRootCauseMessage(
+                        "storage.provider=gcs: declare um bean com.google.cloud.storage.Storage"));
     }
 
     @Test

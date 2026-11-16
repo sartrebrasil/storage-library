@@ -12,9 +12,7 @@ import com.example.storage.oci.OciObjectStorage;
 import com.example.storage.aws.S3ObjectStorage;
 import com.example.storage.sftp.SftpConnection;
 import com.example.storage.sftp.SftpObjectStorage;
-import com.google.cloud.storage.HttpStorageOptions;
 import com.google.cloud.storage.MultipartUploadClient;
-import com.google.cloud.storage.MultipartUploadSettings;
 import com.google.cloud.storage.Storage;
 import com.oracle.bmc.auth.ConfigFileAuthenticationDetailsProvider;
 import com.oracle.bmc.objectstorage.ObjectStorageClient;
@@ -130,31 +128,12 @@ public class StorageAutoConfiguration {
     @ConditionalOnProperty(prefix = PREFIX, name = "provider", havingValue = "gcs")
     static class GcsStorageConfiguration {
 
+        /** Os clientes são da aplicação e só são resolvidos ao criar o primeiro {@code ObjectStorage}. */
         @Bean
-        @ConditionalOnMissingBean
-        HttpStorageOptions gcsStorageOptions(StorageProperties properties) {
-            HttpStorageOptions.Builder builder = HttpStorageOptions.newBuilder();
-            if (properties.gcs().projectId() != null) {
-                builder.setProjectId(properties.gcs().projectId());
-            }
-            return builder.build();
-        }
-
-        @Bean
-        @ConditionalOnMissingBean
-        Storage gcsStorage(HttpStorageOptions options) {
-            return options.getService();
-        }
-
-        @Bean
-        @ConditionalOnMissingBean
-        MultipartUploadClient gcsMultipartUploadClient(HttpStorageOptions options) {
-            return MultipartUploadClient.create(MultipartUploadSettings.of(options));
-        }
-
-        @Bean
-        BucketStorageFactory gcsBucketStorageFactory(Storage gcsStorage, MultipartUploadClient gcsMultipartUploadClient) {
-            return bucket -> new GcsObjectStorage(gcsStorage, gcsMultipartUploadClient, bucket);
+        BucketStorageFactory gcsBucketStorageFactory(BeanFactory beans) {
+            return bucket -> new GcsObjectStorage(
+                    StorageClientBeans.require(beans, Storage.class, StorageProperties.Provider.GCS),
+                    StorageClientBeans.require(beans, MultipartUploadClient.class, StorageProperties.Provider.GCS), bucket);
         }
 
         @Bean
