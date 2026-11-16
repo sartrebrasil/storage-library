@@ -55,9 +55,27 @@ final class RemovedKeys {
         return names;
     }
 
-    /** Sem hífen nem sublinhado e em minúsculas, para valer também na forma de variável de ambiente. */
+    /**
+     * Sem hífen, sublinhado nem ponto e em minúsculas, para valer também na forma de variável de ambiente:
+     * {@code STORAGE_S3_ACCESS_KEY} chega ao {@code Binder} como {@code access.key}, e {@code STORAGE_S3_ACCESSKEY} como
+     * {@code accesskey}; as duas ligavam {@code storage.s3.access-key}.
+     */
     private static String normalize(String key) {
-        return key.replace("-", "").replace("_", "").toLowerCase(Locale.ROOT);
+        return key.replace("-", "").replace("_", "").replace(".", "").toLowerCase(Locale.ROOT);
+    }
+
+    /** As chaves do mapa, com as aninhadas ({@code access} -> {@code key}) juntadas por ponto. */
+    private static List<String> flatten(String prefix, Map<?, ?> map) {
+        List<String> keys = new ArrayList<>();
+        map.forEach((key, value) -> {
+            String name = prefix.isEmpty() ? String.valueOf(key) : prefix + "." + key;
+            if (value instanceof Map<?, ?> nested && !nested.isEmpty()) {
+                keys.addAll(flatten(name, nested));
+            } else {
+                keys.add(name);
+            }
+        });
+        return keys;
     }
 
     /** @throws IllegalStateException com todas as chaves removidas presentes, numa mensagem só */
@@ -67,7 +85,7 @@ final class RemovedKeys {
         SECTIONS.forEach((name, section) -> {
             Map<String, Object> keys = binder.bind("storage." + name, Bindable.mapOf(String.class, Object.class))
                     .orElse(Map.of());
-            new TreeSet<>(keys.keySet()).forEach(key -> {
+            new TreeSet<>(flatten("", keys)).forEach(key -> {
                 String display = section.display(key);
                 if (display != null) {
                     problems.add("storage." + name + "." + display + " foi removida: configure " + section.replacement()

@@ -35,6 +35,21 @@ class RemovedKeysTest {
     }
 
     @Test
+    void chavesDeVariasPalavrasEmVariavelDeAmbiente() {
+        runner.withInitializer(context -> context.getEnvironment().getPropertySources().addFirst(
+                        new SystemEnvironmentPropertySource("test-systemEnvironment", Map.of(
+                                "STORAGE_S3_ACCESS_KEY", "k", "STORAGE_S3_PATH_STYLE", "true",
+                                "STORAGE_SFTP_PRIVATE_KEY_PATH", "/k", "STORAGE_AZURE_CONNECTION_STRING", "c",
+                                "STORAGE_S3_ASYNC_CREDENTIAL_UPDATE", "false"))))
+                .run(context -> assertThat(context).hasFailed().getFailure()
+                        .hasStackTraceContaining("storage.s3.access-key foi removida")
+                        .hasStackTraceContaining("storage.s3.path-style foi removida")
+                        .hasStackTraceContaining("storage.sftp.private-key-path foi removida")
+                        .hasStackTraceContaining("storage.azure.connection-string foi removida")
+                        .hasStackTraceContaining("storage.s3.async-credential-update foi removida"));
+    }
+
+    @Test
     void todasAsChavesRemovidasNaMesmaMensagem() {
         runner.withPropertyValues("storage.s3.endpoint=http://localhost:9000", "storage.sftp.host=h",
                         "storage.azure.connection-string=UseDevelopmentStorage=true", "storage.gcs.project-id=p",

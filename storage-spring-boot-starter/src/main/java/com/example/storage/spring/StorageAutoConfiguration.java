@@ -49,9 +49,11 @@ import java.util.Map;
  * Cria o {@link ObjectStorage} do provedor em {@code storage.provider}. Cada provedor só é
  * configurado se o adapter correspondente estiver no classpath.
  *
- * <p>Clientes do SDK declarados pela aplicação ({@code S3Client}, {@code BlobContainerClient},
- * {@code HttpStorageOptions}, cliente OCI...) são reaproveitados; um {@code ObjectStorage}
- * próprio desliga esta auto-configuração.</p>
+ * <p>O starter não cria credencial, cliente nem presigner: a aplicação declara o objeto raiz do provedor
+ * ({@code S3Client} e {@code S3Presigner}, {@code Storage} e {@code MultipartUploadClient},
+ * {@code BlobServiceClient}, o cliente OCI, {@code SftpConnection}), e o starter monta o {@code ObjectStorage}
+ * de cada bucket sobre ele. Um {@code ObjectStorage} próprio desliga esta auto-configuração, e aí os clientes
+ * não são exigidos.</p>
  *
  * <p>Vários buckets: {@code storage.buckets.<nome>=<bucket>} cria um {@code ObjectStorage} por
  * entrada ({@code <nome>ObjectStorage}, qualifier {@code <nome>}), todos com os mesmos clientes,
