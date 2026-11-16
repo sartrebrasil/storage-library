@@ -12,6 +12,7 @@ import com.example.storage.aws.S3ObjectStorage;
 import com.example.storage.sftp.SftpObjectStorage;
 import com.example.storage.spring.exemplos.AzureClientsExample;
 import com.example.storage.spring.exemplos.GcsClientsExample;
+import com.example.storage.spring.exemplos.OciClientsExample;
 import com.example.storage.spring.exemplos.S3ClientsExample;
 import com.google.cloud.NoCredentials;
 import com.google.cloud.storage.HttpStorageOptions;
@@ -296,6 +297,30 @@ class StorageAutoConfigurationTest {
                     assertThat(context).hasSingleBean(OciObjectStorage.class);
                     verify(client).getNamespace(any());
                 });
+    }
+
+    @Test
+    void ociSemClienteFalhaComAMensagemDoProvedor() {
+        runner.withPropertyValues("storage.provider=oci", "storage.bucket=reports", "storage.oci.namespace=ns")
+                .run(context -> assertThat(context).hasFailed().getFailure().hasRootCauseMessage(
+                        "storage.provider=oci: declare um bean com.oracle.bmc.objectstorage.ObjectStorage"));
+    }
+
+    @Test
+    void ociUsaOClienteMontadoPeloExemplo() throws Exception {
+        java.security.KeyPairGenerator generator = java.security.KeyPairGenerator.getInstance("RSA");
+        generator.initialize(2048);
+        byte[] der = generator.generateKeyPair().getPrivate().getEncoded();
+        String pem = "-----BEGIN PRIVATE KEY-----\n" + java.util.Base64.getMimeEncoder(64, "\n".getBytes())
+                .encodeToString(der) + "\n-----END PRIVATE KEY-----\n";
+        var auth = com.oracle.bmc.auth.SimpleAuthenticationDetailsProvider.builder().tenantId("t").userId("u")
+                .fingerprint("aa:bb").region(com.oracle.bmc.Region.SA_SAOPAULO_1)
+                .privateKeySupplier(() -> new java.io.ByteArrayInputStream(pem.getBytes())).build();
+        var client = OciClientsExample.objectStorageClient(auth);
+
+        runner.withPropertyValues("storage.provider=oci", "storage.bucket=reports", "storage.oci.namespace=ns")
+                .withBean(com.oracle.bmc.objectstorage.ObjectStorage.class, () -> client)
+                .run(context -> assertThat(context).hasSingleBean(OciObjectStorage.class));
     }
 
     @Test

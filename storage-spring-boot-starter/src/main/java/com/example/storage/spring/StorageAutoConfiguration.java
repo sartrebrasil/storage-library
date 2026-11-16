@@ -12,7 +12,6 @@ import com.example.storage.sftp.SftpConnection;
 import com.example.storage.sftp.SftpObjectStorage;
 import com.google.cloud.storage.MultipartUploadClient;
 import com.google.cloud.storage.Storage;
-import com.oracle.bmc.auth.ConfigFileAuthenticationDetailsProvider;
 import com.oracle.bmc.objectstorage.ObjectStorageClient;
 import com.oracle.bmc.objectstorage.requests.GetNamespaceRequest;
 import net.schmizz.sshj.SSHClient;
@@ -191,24 +190,18 @@ public class StorageAutoConfiguration {
     @ConditionalOnProperty(prefix = PREFIX, name = "provider", havingValue = "oci")
     static class OciStorageConfiguration {
 
+        /**
+         * O cliente é da aplicação e só é resolvido ao criar o primeiro {@code ObjectStorage}. Namespace consultado na
+         * criação de cada storage (uma chamada por bucket, na inicialização) quando não está em {@code storage.oci.namespace}.
+         */
         @Bean
-        @ConditionalOnMissingBean(com.oracle.bmc.objectstorage.ObjectStorage.class)
-        ObjectStorageClient ociObjectStorageClient(StorageProperties properties) throws IOException {
-            StorageProperties.Oci oci = properties.oci();
-            ConfigFileAuthenticationDetailsProvider auth = oci.configFile() == null
-                    ? new ConfigFileAuthenticationDetailsProvider(oci.profile())
-                    : new ConfigFileAuthenticationDetailsProvider(oci.configFile(), oci.profile());
-            return ObjectStorageClient.builder().build(auth);
-        }
-
-        /** Namespace consultado na criação de cada storage (uma chamada por bucket, na inicialização). */
-        @Bean
-        BucketStorageFactory ociBucketStorageFactory(com.oracle.bmc.objectstorage.ObjectStorage ociObjectStorageClient,
-                                                     StorageProperties properties) {
+        BucketStorageFactory ociBucketStorageFactory(BeanFactory beans, StorageProperties properties) {
             return bucket -> {
+                com.oracle.bmc.objectstorage.ObjectStorage client = StorageClientBeans.require(beans,
+                        com.oracle.bmc.objectstorage.ObjectStorage.class, StorageProperties.Provider.OCI);
                 String namespace = properties.oci().namespace() != null ? properties.oci().namespace()
-                        : ociObjectStorageClient.getNamespace(GetNamespaceRequest.builder().build()).getValue();
-                return new OciObjectStorage(ociObjectStorageClient, namespace, bucket);
+                        : client.getNamespace(GetNamespaceRequest.builder().build()).getValue();
+                return new OciObjectStorage(client, namespace, bucket);
             };
         }
 
