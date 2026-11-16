@@ -63,7 +63,7 @@ class StorageAutoConfigurationTest {
 
     @Test
     void providerSemBucketFalhaNaInicializacao() {
-        runner.withPropertyValues("storage.provider=s3", "storage.s3.region=us-east-1").run(context ->
+        runner.withPropertyValues("storage.provider=s3").run(context ->
                 assertThat(context).hasFailed().getFailure().hasRootCauseMessage(
                         "storage.bucket é obrigatório quando storage.provider está definido"));
     }
@@ -231,17 +231,6 @@ class StorageAutoConfigurationTest {
                         "storage.provider=azure: declare um bean com.azure.storage.blob.BlobServiceClient; o starter "
                                 + "deriva o BlobContainerClient por dentro, e um BlobContainerClient da aplicação não é "
                                 + "mais usado"));
-    }
-
-    @Test
-    void toStringDasPropertiesNaoExpoeSegredos() {
-        var s3 = new StorageProperties.S3(null, null, false, "AKIAEXEMPLO", "segredo-s3",
-                StorageProperties.S3.Checksum.CRC32, true);
-        var azure = new StorageProperties.Azure("AccountName=a;AccountKey=segredo-azure", null, null);
-        var sftp = new StorageProperties.Sftp("h", 22, "u", "segredo-sftp", null, "/r", null, false,
-                Duration.ofSeconds(30), 8);
-
-        assertThat(s3 + " " + azure + " " + sftp).doesNotContain("segredo").contains("AKIAEXEMPLO", "****");
     }
 
     @Test

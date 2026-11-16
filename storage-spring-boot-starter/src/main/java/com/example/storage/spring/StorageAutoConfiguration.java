@@ -63,7 +63,7 @@ import java.util.Map;
  */
 @AutoConfiguration
 @EnableConfigurationProperties(StorageProperties.class)
-@Import(StorageAutoConfiguration.BucketsRegistrar.class)
+@Import({StorageAutoConfiguration.BucketsRegistrar.class, StorageAutoConfiguration.RemovedKeysRegistrar.class})
 public class StorageAutoConfiguration {
 
     private static final String PREFIX = "storage";
@@ -282,6 +282,22 @@ public class StorageAutoConfiguration {
     static Map<String, String> buckets(Environment environment) {
         return Binder.get(environment).bind(PREFIX + ".buckets", Bindable.mapOf(String.class, String.class))
                 .orElse(Map.of());
+    }
+
+    /** Falha o startup com as chaves de conexão removidas de {@code storage.*}, haja ou não provedor. */
+    static class RemovedKeysRegistrar implements ImportBeanDefinitionRegistrar, EnvironmentAware {
+
+        private Environment environment;
+
+        @Override
+        public void setEnvironment(Environment environment) {
+            this.environment = environment;
+        }
+
+        @Override
+        public void registerBeanDefinitions(AnnotationMetadata metadata, BeanDefinitionRegistry registry) {
+            RemovedKeys.check(environment);
+        }
     }
 
     /**
