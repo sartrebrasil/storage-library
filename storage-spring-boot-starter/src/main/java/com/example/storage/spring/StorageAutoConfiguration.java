@@ -1,9 +1,7 @@
 package com.example.storage.spring;
 
-import com.azure.identity.DefaultAzureCredentialBuilder;
 import com.azure.storage.blob.BlobContainerClient;
 import com.azure.storage.blob.BlobServiceClient;
-import com.azure.storage.blob.BlobServiceClientBuilder;
 import com.example.storage.ObjectStorage;
 import com.example.storage.azure.AzureBlobObjectStorage;
 import com.example.storage.filesystem.FileSystemObjectStorage;
@@ -23,7 +21,6 @@ import org.springframework.beans.factory.BeanFactory;
 import org.springframework.beans.factory.BeanFactoryAware;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
-import org.springframework.beans.factory.config.ConfigurableListableBeanFactory;
 import org.springframework.beans.factory.support.AutowireCandidateQualifier;
 import org.springframework.beans.factory.support.BeanDefinitionRegistry;
 import org.springframework.beans.factory.support.RootBeanDefinition;
@@ -46,7 +43,6 @@ import org.springframework.context.annotation.ImportBeanDefinitionRegistrar;
 import org.springframework.core.env.Environment;
 import org.springframework.core.type.AnnotatedTypeMetadata;
 import org.springframework.core.type.AnnotationMetadata;
-import org.springframework.util.ClassUtils;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.presigner.S3Presigner;
 
@@ -149,56 +145,42 @@ public class StorageAutoConfiguration {
     @ConditionalOnProperty(prefix = PREFIX, name = "provider", havingValue = "azure")
     static class AzureStorageConfiguration {
 
-        private static final String AZURE_CREDENTIAL = "com.azure.identity.DefaultAzureCredentialBuilder";
-
-        /** Cliente da conta, sem container: a aplicação deriva um {@code BlobContainerClient} por container. */
+        /**
+         * O {@code BlobServiceClient} é da aplicação; o starter deriva um {@code BlobContainerClient} por container e
+         * não publica nem aceita um {@code BlobContainerClient} da aplicação.
+         */
         @Bean
-        @ConditionalOnMissingBean
-        BlobServiceClient azureBlobServiceClient(StorageProperties properties,
-                                                 ConfigurableListableBeanFactory beanFactory) {
-            StorageProperties.Azure azure = properties.azure();
-            BlobServiceClientBuilder builder = new BlobServiceClientBuilder();
-            if (azure.connectionString() != null) {
-                builder.connectionString(azure.connectionString());
-            } else if (azure.endpoint() != null) {
-                // azure-identity é opcional: sem ela, o NoClassDefFoundError não diria o que falta
-                if (!ClassUtils.isPresent(AZURE_CREDENTIAL, beanFactory.getBeanClassLoader())) {
-                    throw new IllegalStateException("storage.azure.endpoint usa DefaultAzureCredential: adicione a "
-                            + "dependência com.azure:azure-identity, ou use storage.azure.connection-string");
-                }
-                builder.endpoint(azure.endpoint()).credential(new DefaultAzureCredentialBuilder().build());
-            } else {
-                throw new IllegalStateException(
-                        "Defina storage.azure.connection-string ou storage.azure.endpoint");
-            }
-            return builder.buildClient();
-        }
-
-        /** Não é criado com {@code ObjectStorage} da aplicação: aí {@code storage.bucket} pode faltar. */
-        @Bean
-        @ConditionalOnMissingBean({BlobContainerClient.class, ObjectStorage.class})
-        @Conditional(SingleBucket.class)
-        BlobContainerClient azureBlobContainerClient(BlobServiceClient azureBlobServiceClient,
-                                                     StorageProperties properties) {
-            return azureBlobServiceClient.getBlobContainerClient(requireBucket(properties));
-        }
-
-        @Bean
-        BucketStorageFactory azureBucketStorageFactory(BlobServiceClient azureBlobServiceClient,
-                                                       StorageProperties properties) {
-            return bucket -> azureStorage(azureBlobServiceClient.getBlobContainerClient(bucket), properties);
+        BucketStorageFactory azureBucketStorageFactory(BeanFactory beans, StorageProperties properties) {
+            return bucket -> azureStorage(blobServiceClient(beans).getBlobContainerClient(bucket), properties);
         }
 
         @Bean
         @ConditionalOnMissingBean(ObjectStorage.class)
         @Conditional(SingleBucket.class)
-        ObjectStorage azureObjectStorage(BlobContainerClient azureBlobContainerClient, StorageProperties properties) {
-            return azureStorage(azureBlobContainerClient, properties);
+        ObjectStorage azureObjectStorage(BucketStorageFactory azureBucketStorageFactory, StorageProperties properties) {
+            return azureBucketStorageFactory.create(requireBucket(properties));
         }
 
-        /** O tipo de SAS segue a autenticação: chave da conta com connection string, senão user delegation. */
+        private static BlobServiceClient blobServiceClient(BeanFactory beans) {
+            try {
+                return StorageClientBeans.require(beans, BlobServiceClient.class, StorageProperties.Provider.AZURE);
+            } catch (IllegalStateException e) {
+                if (e.getMessage().contains("declare um bean")) {
+                    throw new IllegalStateException(e.getMessage() + "; o starter deriva o BlobContainerClient por "
+                            + "dentro, e um BlobContainerClient da aplicação não é mais usado");
+                }
+                throw e;
+            }
+        }
+
+        /** O tipo de SAS vem de {@code storage.azure.sas}: o starter não conhece a autenticação do cliente. */
         private static ObjectStorage azureStorage(BlobContainerClient container, StorageProperties properties) {
-            return properties.azure().connectionString() != null
+            StorageProperties.Azure.Sas sas = properties.azure().sas();
+            if (sas == null) {
+                throw new IllegalStateException("storage.azure.sas é obrigatório quando storage.provider=azure "
+                        + "(shared-key ou user-delegation)");
+            }
+            return sas == StorageProperties.Azure.Sas.SHARED_KEY
                     ? AzureBlobObjectStorage.withSharedKey(container)
                     : AzureBlobObjectStorage.withUserDelegation(container);
         }

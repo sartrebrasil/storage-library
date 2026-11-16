@@ -112,11 +112,11 @@
       <version>${micrometer.version}</version>
       <optional>true</optional>
     </dependency>
-    <!-- Azure sem connection string: DefaultAzureCredential -->
+    <!-- só o exemplo do Azure (DefaultAzureCredential) usa -->
     <dependency>
       <groupId>com.azure</groupId>
       <artifactId>azure-identity</artifactId>
-      <optional>true</optional>
+      <scope>test</scope>
     </dependency>
 
     <dependency>

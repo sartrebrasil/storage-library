@@ -102,13 +102,17 @@ public record StorageProperties(Provider provider,
      * {@code endpoint} com DefaultAzureCredential (requer {@code azure-identity}).
      *
      * @param endpoint ex.: {@code https://conta.blob.core.windows.net}
+     * @param sas      tipo da SAS gerada pelo starter: {@code shared-key} (chave da conta) ou {@code user-delegation}
+     *                 (Entra ID). Obrigatório quando o starter cria o {@code ObjectStorage}; sem padrão
      */
-    public record Azure(String connectionString, String endpoint) {
+    public record Azure(String connectionString, String endpoint, Sas sas) {
+
+        public enum Sas { SHARED_KEY, USER_DELEGATION }
 
         /** A connection string carrega a {@code AccountKey}. */
         @Override
         public String toString() {
-            return "Azure[connectionString=" + mask(connectionString) + ", endpoint=" + endpoint + "]";
+            return "Azure[connectionString=" + mask(connectionString) + ", endpoint=" + endpoint + ", sas=" + sas + "]";
         }
     }
 

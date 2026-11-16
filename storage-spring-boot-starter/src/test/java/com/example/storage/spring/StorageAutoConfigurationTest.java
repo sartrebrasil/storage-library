@@ -10,6 +10,7 @@ import com.example.storage.memory.InMemoryObjectStorage;
 import com.example.storage.oci.OciObjectStorage;
 import com.example.storage.aws.S3ObjectStorage;
 import com.example.storage.sftp.SftpObjectStorage;
+import com.example.storage.spring.exemplos.AzureClientsExample;
 import com.example.storage.spring.exemplos.GcsClientsExample;
 import com.example.storage.spring.exemplos.S3ClientsExample;
 import com.google.cloud.NoCredentials;
@@ -184,39 +185,57 @@ class StorageAutoConfigurationTest {
         });
     }
 
+    /** O Azure com o {@code BlobServiceClient} que a aplicação declararia (exemplo do emulador: Azurite). */
+    private ApplicationContextRunner azure() {
+        return runner.withUserConfiguration(AzureClientsExample.Emulador.class)
+                .withPropertyValues("storage.provider=azure", "storage.bucket=reports");
+    }
+
     @Test
-    void azureComConnectionStringUsaSasPorChaveDaConta() {
-        runner.withPropertyValues("storage.provider=azure", "storage.bucket=reports",
-                "storage.azure.connection-string=UseDevelopmentStorage=true").run(context -> {
+    void azureUsaBlobServiceClientDaAplicacaoComSasPorChaveDaConta() {
+        azure().withPropertyValues("storage.azure.sas=shared-key").run(context -> {
             ObjectStorage storage = context.getBean(ObjectStorage.class);
-            assertThat(storage).isInstanceOf(AzureBlobObjectStorage.class);
+            assertThat(storage).isInstanceOf(AzureBlobObjectStorage.class)
+                    .hasFieldOrPropertyWithValue("userDelegation", false);
             // SAS por chave da conta é gerado localmente; user delegation exigiria rede.
-            URI url = storage.presignGet("r.csv", Duration.ofMinutes(5));
-            assertThat(url.toString()).startsWith("http://127.0.0.1:10000/devstoreaccount1/reports/r.csv?")
-                    .contains("sig=");
+            assertThat(storage.presignGet("r.csv", Duration.ofMinutes(5)).toString())
+                    .startsWith("http://127.0.0.1:10000/devstoreaccount1/reports/r.csv?").contains("sig=");
         });
     }
 
     @Test
-    void azureComEndpointUsaDefaultAzureCredential() {
-        runner.withPropertyValues("storage.provider=azure", "storage.bucket=reports",
-                        "storage.azure.endpoint=https://conta.blob.core.windows.net")
-                .run(context -> assertThat(context).hasSingleBean(AzureBlobObjectStorage.class));
+    void azureComUserDelegationUsaSasPorDelegacao() {
+        azure().withPropertyValues("storage.azure.sas=user-delegation").run(context ->
+                assertThat(context.getBean(ObjectStorage.class)).isInstanceOf(AzureBlobObjectStorage.class)
+                        .hasFieldOrPropertyWithValue("userDelegation", true));
     }
 
     @Test
-    void azureComEndpointSemAzureIdentityFalhaComMensagemClara() {
-        runner.withPropertyValues("storage.provider=azure", "storage.bucket=reports",
-                        "storage.azure.endpoint=https://conta.blob.core.windows.net")
-                .withClassLoader(new FilteredClassLoader("com.azure.identity"))
-                .run(context -> assertThat(context).getFailure().rootCause().hasMessageContaining("azure-identity"));
+    void azureSemSasFalha() {
+        azure().run(context -> assertThat(context).hasFailed().getFailure().hasRootCauseMessage(
+                "storage.azure.sas é obrigatório quando storage.provider=azure (shared-key ou user-delegation)"));
+    }
+
+    @Test
+    void azureSemSasComObjectStorageDaAplicacaoSobe() {
+        azure().withBean(ObjectStorage.class, InMemoryObjectStorage::new)
+                .run(context -> assertThat(context).hasNotFailed());
+    }
+
+    @Test
+    void azureSemBlobServiceClientFalhaCitandoOContainerClient() {
+        runner.withPropertyValues("storage.provider=azure", "storage.bucket=reports", "storage.azure.sas=shared-key")
+                .run(context -> assertThat(context).hasFailed().getFailure().hasRootCauseMessage(
+                        "storage.provider=azure: declare um bean com.azure.storage.blob.BlobServiceClient; o starter "
+                                + "deriva o BlobContainerClient por dentro, e um BlobContainerClient da aplicação não é "
+                                + "mais usado"));
     }
 
     @Test
     void toStringDasPropertiesNaoExpoeSegredos() {
         var s3 = new StorageProperties.S3(null, null, false, "AKIAEXEMPLO", "segredo-s3",
                 StorageProperties.S3.Checksum.CRC32, true);
-        var azure = new StorageProperties.Azure("AccountName=a;AccountKey=segredo-azure", null);
+        var azure = new StorageProperties.Azure("AccountName=a;AccountKey=segredo-azure", null, null);
         var sftp = new StorageProperties.Sftp("h", 22, "u", "segredo-sftp", null, "/r", null, false,
                 Duration.ofSeconds(30), 8);
 
@@ -225,9 +244,8 @@ class StorageAutoConfigurationTest {
 
     @Test
     void azureVariosContainersDerivamDoServiceClient() {
-        runner.withPropertyValues("storage.provider=azure",
-                        "storage.azure.connection-string=UseDevelopmentStorage=true")
-                .withUserConfiguration(AzureMultiContainer.class)
+        runner.withPropertyValues("storage.provider=azure")
+                .withUserConfiguration(AzureClientsExample.Emulador.class, AzureMultiContainer.class)
                 .run(context -> {
                     assertThat(context).hasNotFailed().doesNotHaveBean(BlobContainerClient.class);
                     ObjectStorage artifacts = context.getBean("artifactsStorage", ObjectStorage.class);
@@ -248,13 +266,6 @@ class StorageAutoConfigurationTest {
         ObjectStorage artifactsStorage(BlobServiceClient service) {
             return AzureBlobObjectStorage.withSharedKey(service.getBlobContainerClient("artifacts"));
         }
-    }
-
-    @Test
-    void azureSemCredencialFalhaComMensagemClara() {
-        runner.withPropertyValues("storage.provider=azure", "storage.bucket=reports").run(context ->
-                assertThat(context).hasFailed().getFailure()
-                        .hasRootCauseMessage("Defina storage.azure.connection-string ou storage.azure.endpoint"));
     }
 
     @Test
