@@ -37,7 +37,7 @@ Instala os artefatos em `~/.m2`. Para usar em outro projeto:
 <dependencyManagement>
   <dependencies>
     <dependency>
-      <groupId>com.example</groupId>
+      <groupId>com.example.storage</groupId>
       <artifactId>storage-bom</artifactId>
       <version>0.1.0-SNAPSHOT</version>
       <type>pom</type>
@@ -48,11 +48,11 @@ Instala os artefatos em `~/.m2`. Para usar em outro projeto:
 
 <dependencies>
   <dependency>
-    <groupId>com.example</groupId>
+    <groupId>com.example.storage</groupId>
     <artifactId>storage-aws</artifactId>
   </dependency>
   <dependency>
-    <groupId>com.example</groupId>
+    <groupId>com.example.storage</groupId>
     <artifactId>storage-testkit</artifactId>
     <scope>test</scope>
   </dependency>
@@ -274,11 +274,11 @@ Adicione o starter e o adapter do provedor:
 
 ```xml
 <dependency>
-  <groupId>com.example</groupId>
+  <groupId>com.example.storage</groupId>
   <artifactId>storage-spring-boot-starter</artifactId>
 </dependency>
 <dependency>
-  <groupId>com.example</groupId>
+  <groupId>com.example.storage</groupId>
   <artifactId>storage-aws</artifactId>
 </dependency>
 ```

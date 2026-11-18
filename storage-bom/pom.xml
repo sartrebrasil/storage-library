@@ -5,7 +5,7 @@
   <modelVersion>4.0.0</modelVersion>
   <!-- Sem parent de propósito: importar o BOM alinha só os módulos da library,
        sem impor as versões dos SDKs ao consumidor. -->
-  <groupId>com.example</groupId>
+  <groupId>com.example.storage</groupId>
   <artifactId>storage-bom</artifactId>
   <version>0.1.0-SNAPSHOT</version>
   <packaging>pom</packaging>
@@ -14,52 +14,52 @@
   <dependencyManagement>
     <dependencies>
       <dependency>
-        <groupId>com.example</groupId>
+        <groupId>com.example.storage</groupId>
         <artifactId>storage-core</artifactId>
         <version>${project.version}</version>
       </dependency>
       <dependency>
-        <groupId>com.example</groupId>
+        <groupId>com.example.storage</groupId>
         <artifactId>storage-testkit</artifactId>
         <version>${project.version}</version>
       </dependency>
       <dependency>
-        <groupId>com.example</groupId>
+        <groupId>com.example.storage</groupId>
         <artifactId>storage-aws</artifactId>
         <version>${project.version}</version>
       </dependency>
       <dependency>
-        <groupId>com.example</groupId>
+        <groupId>com.example.storage</groupId>
         <artifactId>storage-gcp</artifactId>
         <version>${project.version}</version>
       </dependency>
       <dependency>
-        <groupId>com.example</groupId>
+        <groupId>com.example.storage</groupId>
         <artifactId>storage-azure</artifactId>
         <version>${project.version}</version>
       </dependency>
       <dependency>
-        <groupId>com.example</groupId>
+        <groupId>com.example.storage</groupId>
         <artifactId>storage-oci</artifactId>
         <version>${project.version}</version>
       </dependency>
       <dependency>
-        <groupId>com.example</groupId>
+        <groupId>com.example.storage</groupId>
         <artifactId>storage-filesystem</artifactId>
         <version>${project.version}</version>
       </dependency>
       <dependency>
-        <groupId>com.example</groupId>
+        <groupId>com.example.storage</groupId>
         <artifactId>storage-sftp</artifactId>
         <version>${project.version}</version>
       </dependency>
       <dependency>
-        <groupId>com.example</groupId>
+        <groupId>com.example.storage</groupId>
         <artifactId>storage-spring-boot-starter</artifactId>
         <version>${project.version}</version>
       </dependency>
       <dependency>
-        <groupId>com.example</groupId>
+        <groupId>com.example.storage</groupId>
         <artifactId>storage-spring-web</artifactId>
         <version>${project.version}</version>
       </dependency>

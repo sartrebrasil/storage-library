@@ -4,7 +4,7 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
   <parent>
-    <groupId>com.example</groupId>
+    <groupId>com.example.storage</groupId>
     <artifactId>storage-parent</artifactId>
     <version>0.1.0-SNAPSHOT</version>
   </parent>
@@ -23,7 +23,7 @@
 
   <dependencies>
     <dependency>
-      <groupId>com.example</groupId>
+      <groupId>com.example.storage</groupId>
       <artifactId>storage-core</artifactId>
     </dependency>
     <dependency>
@@ -34,37 +34,37 @@
 
     <!-- A aplicação escolhe o provedor adicionando o adapter correspondente -->
     <dependency>
-      <groupId>com.example</groupId>
+      <groupId>com.example.storage</groupId>
       <artifactId>storage-aws</artifactId>
       <version>${project.version}</version>
       <optional>true</optional>
     </dependency>
     <dependency>
-      <groupId>com.example</groupId>
+      <groupId>com.example.storage</groupId>
       <artifactId>storage-gcp</artifactId>
       <version>${project.version}</version>
       <optional>true</optional>
     </dependency>
     <dependency>
-      <groupId>com.example</groupId>
+      <groupId>com.example.storage</groupId>
       <artifactId>storage-azure</artifactId>
       <version>${project.version}</version>
       <optional>true</optional>
     </dependency>
     <dependency>
-      <groupId>com.example</groupId>
+      <groupId>com.example.storage</groupId>
       <artifactId>storage-oci</artifactId>
       <version>${project.version}</version>
       <optional>true</optional>
     </dependency>
     <dependency>
-      <groupId>com.example</groupId>
+      <groupId>com.example.storage</groupId>
       <artifactId>storage-filesystem</artifactId>
       <version>${project.version}</version>
       <optional>true</optional>
     </dependency>
     <dependency>
-      <groupId>com.example</groupId>
+      <groupId>com.example.storage</groupId>
       <artifactId>storage-sftp</artifactId>
       <version>${project.version}</version>
       <optional>true</optional>
@@ -120,7 +120,7 @@
     </dependency>
 
     <dependency>
-      <groupId>com.example</groupId>
+      <groupId>com.example.storage</groupId>
       <artifactId>storage-testkit</artifactId>
       <scope>test</scope>
     </dependency>
