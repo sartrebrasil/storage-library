@@ -2,7 +2,7 @@
 
 ## Decisões
 
-- Coordenadas: `com.example:storage-*`, pacote base `com.example.storage`.
+- Coordenadas: `com.example.storage:storage-*`, pacote base `com.example.storage`.
 - Distribuição: somente `mvn install` local (sem repositório remoto).
 - API síncrona (paralelismo com virtual threads); Java 21.
 - Integração: Java puro + starter Spring Boot 3.5.x.
