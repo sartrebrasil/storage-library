@@ -1,9 +1,9 @@
 package com.example.storage.gcp;
 
-import com.example.storage.AccessDeniedException;
+import com.example.storage.exception.AccessDeniedException;
 import com.example.storage.MultipartSession;
 import com.example.storage.ObjectMetadata;
-import com.example.storage.StorageException;
+import com.example.storage.exception.StorageException;
 import com.example.storage.UploadedPart;
 import com.google.cloud.storage.MultipartUploadClient;
 import com.google.cloud.storage.RequestBody;

@@ -2,10 +2,10 @@ package com.example.storage.web;
 
 import com.example.storage.ByteRange;
 import com.example.storage.ObjectInfo;
-import com.example.storage.ObjectNotFoundException;
+import com.example.storage.exception.ObjectNotFoundException;
 import com.example.storage.ObjectStorage;
 import com.example.storage.PutOptions;
-import com.example.storage.RangeNotSatisfiableException;
+import com.example.storage.exception.RangeNotSatisfiableException;
 import com.example.storage.memory.InMemoryObjectStorage;
 import org.junit.jupiter.api.Test;
 import org.springframework.core.io.InputStreamResource;

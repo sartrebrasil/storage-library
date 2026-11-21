@@ -1,6 +1,7 @@
 package com.example.storage;
 
 import java.util.Objects;
+import com.example.storage.exception.RangeNotSatisfiableException;
 
 /**
  * Faixa de bytes para leitura parcial.

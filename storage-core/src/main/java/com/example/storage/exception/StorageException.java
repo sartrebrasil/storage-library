@@ -1,4 +1,4 @@
-package com.example.storage;
+package com.example.storage.exception;
 
 /** Falha no storage. Subclasses indicam os casos que o chamador costuma tratar. */
 public class StorageException extends RuntimeException {

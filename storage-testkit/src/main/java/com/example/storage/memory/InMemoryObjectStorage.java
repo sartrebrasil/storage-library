@@ -2,19 +2,19 @@ package com.example.storage.memory;
 
 import com.example.storage.ByteRange;
 import com.example.storage.Condition;
-import com.example.storage.MultipartConfig;
+import com.example.storage.multipart.MultipartConfig;
 import com.example.storage.MultipartSession;
 import com.example.storage.ObjectInfo;
 import com.example.storage.ObjectMetadata;
-import com.example.storage.ObjectNotFoundException;
-import com.example.storage.ObjectRetainedException;
+import com.example.storage.exception.ObjectNotFoundException;
+import com.example.storage.exception.ObjectRetainedException;
 import com.example.storage.ObjectStorage;
 import com.example.storage.ObjectSummary;
-import com.example.storage.PreconditionFailedException;
-import com.example.storage.PresignedRequest;
+import com.example.storage.exception.PreconditionFailedException;
+import com.example.storage.presign.PresignedRequest;
 import com.example.storage.PutOptions;
 import com.example.storage.Retention;
-import com.example.storage.StorageException;
+import com.example.storage.exception.StorageException;
 import com.example.storage.UploadedPart;
 
 import java.io.ByteArrayInputStream;

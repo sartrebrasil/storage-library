@@ -1,7 +1,7 @@
 package com.example.storage.spring;
 
 import com.example.storage.ObjectStorage;
-import com.example.storage.StorageException;
+import com.example.storage.exception.StorageException;
 import com.example.storage.memory.InMemoryObjectStorage;
 import com.example.storage.spring.exemplos.S3ClientsExample;
 import org.junit.jupiter.api.Test;

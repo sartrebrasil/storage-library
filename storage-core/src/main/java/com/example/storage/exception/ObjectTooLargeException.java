@@ -1,4 +1,6 @@
-package com.example.storage;
+package com.example.storage.exception;
+
+import com.example.storage.multipart.MultipartConfig;
 
 /**
  * O objeto passaria de {@link MultipartConfig#maxObjectBytes()}. O upload já foi abortado

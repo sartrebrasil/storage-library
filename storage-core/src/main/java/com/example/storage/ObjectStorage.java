@@ -9,6 +9,13 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
 import java.util.stream.Stream;
+import com.example.storage.exception.ObjectNotFoundException;
+import com.example.storage.exception.ObjectRetainedException;
+import com.example.storage.exception.PreconditionFailedException;
+import com.example.storage.exception.RangeNotSatisfiableException;
+import com.example.storage.exception.StorageException;
+import com.example.storage.multipart.MultipartOutputStream;
+import com.example.storage.presign.PresignedRequest;
 
 /**
  * Operações portáveis sobre um bucket (ou container, no Azure). O núcleo da

@@ -2,11 +2,11 @@ package com.example.storage.filesystem;
 
 import com.example.storage.ObjectInfo;
 import com.example.storage.ObjectMetadata;
-import com.example.storage.ObjectNotFoundException;
+import com.example.storage.exception.ObjectNotFoundException;
 import com.example.storage.ObjectStorage;
-import com.example.storage.PreconditionFailedException;
+import com.example.storage.exception.PreconditionFailedException;
 import com.example.storage.PutOptions;
-import com.example.storage.StorageException;
+import com.example.storage.exception.StorageException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;

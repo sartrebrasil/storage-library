@@ -1,4 +1,4 @@
-package com.example.storage;
+package com.example.storage.spi;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -7,6 +7,8 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Properties;
+import com.example.storage.ObjectMetadata;
+import com.example.storage.ObjectStorage;
 
 /**
  * Layout comum dos adapters sobre sistemas de arquivos (filesystem local e SFTP): um arquivo por objeto,

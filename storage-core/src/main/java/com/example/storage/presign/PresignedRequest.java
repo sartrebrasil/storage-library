@@ -1,4 +1,4 @@
-package com.example.storage;
+package com.example.storage.presign;
 
 import java.net.URI;
 import java.util.Map;

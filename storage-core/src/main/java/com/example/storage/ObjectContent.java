@@ -5,6 +5,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.util.Objects;
 import java.util.Optional;
+import com.example.storage.exception.RangeNotSatisfiableException;
 
 /**
  * Conteúdo aberto por {@link ObjectStorage#read}, com o que uma resposta HTTP precisa para

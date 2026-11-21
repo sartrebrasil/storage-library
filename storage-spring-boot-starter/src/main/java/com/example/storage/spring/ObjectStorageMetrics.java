@@ -1,6 +1,6 @@
 package com.example.storage.spring;
 
-import com.example.storage.AccessDeniedException;
+import com.example.storage.exception.AccessDeniedException;
 import com.example.storage.ByteRange;
 import com.example.storage.DeleteResult;
 import com.example.storage.ListEntry;
@@ -8,17 +8,17 @@ import com.example.storage.MultipartSession;
 import com.example.storage.ObjectInfo;
 import com.example.storage.ObjectContent;
 import com.example.storage.ObjectMetadata;
-import com.example.storage.ObjectNotFoundException;
+import com.example.storage.exception.ObjectNotFoundException;
 import com.example.storage.ObjectStorage;
 import com.example.storage.UploadedPart;
-import com.example.storage.PresignedRequest;
+import com.example.storage.presign.PresignedRequest;
 import com.example.storage.PutOptions;
 import com.example.storage.Retention;
-import com.example.storage.ObjectRetainedException;
+import com.example.storage.exception.ObjectRetainedException;
 import com.example.storage.ObjectSummary;
-import com.example.storage.ObjectTooLargeException;
-import com.example.storage.PreconditionFailedException;
-import com.example.storage.RangeNotSatisfiableException;
+import com.example.storage.exception.ObjectTooLargeException;
+import com.example.storage.exception.PreconditionFailedException;
+import com.example.storage.exception.RangeNotSatisfiableException;
 import io.micrometer.observation.Observation;
 import io.micrometer.observation.ObservationRegistry;
 

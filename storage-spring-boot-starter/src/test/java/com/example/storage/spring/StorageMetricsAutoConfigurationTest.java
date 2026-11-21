@@ -1,21 +1,21 @@
 package com.example.storage.spring;
 
-import com.example.storage.AccessDeniedException;
+import com.example.storage.exception.AccessDeniedException;
 import com.example.storage.ByteRange;
 import com.example.storage.CommonPrefix;
 import com.example.storage.DeleteResult;
 import com.example.storage.ObjectContent;
 import com.example.storage.MultipartSession;
 import com.example.storage.ObjectMetadata;
-import com.example.storage.ObjectNotFoundException;
+import com.example.storage.exception.ObjectNotFoundException;
 import com.example.storage.UploadedPart;
-import com.example.storage.ObjectRetainedException;
-import com.example.storage.ObjectTooLargeException;
-import com.example.storage.PreconditionFailedException;
-import com.example.storage.RangeNotSatisfiableException;
+import com.example.storage.exception.ObjectRetainedException;
+import com.example.storage.exception.ObjectTooLargeException;
+import com.example.storage.exception.PreconditionFailedException;
+import com.example.storage.exception.RangeNotSatisfiableException;
 import com.example.storage.ObjectStorage;
 import com.example.storage.ObjectSummary;
-import com.example.storage.StorageException;
+import com.example.storage.exception.StorageException;
 import com.example.storage.memory.InMemoryObjectStorage;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.observation.DefaultMeterObservationHandler;
@@ -508,7 +508,7 @@ class StorageMetricsAutoConfigurationTest {
                     MeterRegistry registry = context.getBean(MeterRegistry.class);
                     assertThat(registry.get("storage.multipart.active").longTaskTimer().activeTasks()).isEqualTo(1);
 
-                    int min = com.example.storage.MultipartConfig.MIN_PART_SIZE;   // o in-memory exige, salvo na última
+                    int min = com.example.storage.multipart.MultipartConfig.MIN_PART_SIZE;   // o in-memory exige, salvo na última
                     UploadedPart one = session.uploadPart(1, new byte[min], min);
                     UploadedPart two = session.uploadPart(2, new byte[3], 3);
                     session.complete(List.of(one, two));

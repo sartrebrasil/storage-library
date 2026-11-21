@@ -1,4 +1,4 @@
-package com.example.storage;
+package com.example.storage.exception;
 
 import java.util.OptionalLong;
 

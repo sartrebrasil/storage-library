@@ -2,7 +2,7 @@ package com.example.storage.sftp;
 
 import com.example.storage.MultipartSession;
 import com.example.storage.ObjectMetadata;
-import com.example.storage.StorageException;
+import com.example.storage.exception.StorageException;
 import com.example.storage.UploadedPart;
 import net.schmizz.sshj.sftp.OpenMode;
 import net.schmizz.sshj.sftp.RemoteFile;

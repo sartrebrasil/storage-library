@@ -2,7 +2,7 @@ package com.example.storage.filesystem;
 
 import com.example.storage.MultipartSession;
 import com.example.storage.ObjectMetadata;
-import com.example.storage.StorageException;
+import com.example.storage.exception.StorageException;
 import com.example.storage.UploadedPart;
 
 import java.io.IOException;

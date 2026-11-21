@@ -1,4 +1,4 @@
-package com.example.storage;
+package com.example.storage.spi;
 
 import org.junit.jupiter.api.Test;
 
@@ -9,6 +9,8 @@ import java.util.List;
 import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.*;
+import com.example.storage.exception.ObjectNotFoundException;
+import com.example.storage.exception.StorageException;
 
 class StorageStreamsTest {
 

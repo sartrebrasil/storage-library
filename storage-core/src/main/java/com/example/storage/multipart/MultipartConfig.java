@@ -1,4 +1,4 @@
-package com.example.storage;
+package com.example.storage.multipart;
 
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;

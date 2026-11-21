@@ -1,20 +1,20 @@
 package com.example.storage.filesystem;
 
-import com.example.storage.AccessDeniedException;
+import com.example.storage.exception.AccessDeniedException;
 import com.example.storage.ByteRange;
 import com.example.storage.Condition;
 import com.example.storage.MultipartSession;
 import com.example.storage.ObjectInfo;
 import com.example.storage.ObjectMetadata;
-import com.example.storage.ObjectNotFoundException;
+import com.example.storage.exception.ObjectNotFoundException;
 import com.example.storage.ObjectStorage;
 import com.example.storage.ObjectSummary;
-import com.example.storage.PreconditionFailedException;
-import com.example.storage.PresignedRequest;
+import com.example.storage.exception.PreconditionFailedException;
+import com.example.storage.presign.PresignedRequest;
 import com.example.storage.PutOptions;
-import com.example.storage.SidecarFiles;
-import com.example.storage.StorageException;
-import com.example.storage.StorageStreams;
+import com.example.storage.spi.SidecarFiles;
+import com.example.storage.exception.StorageException;
+import com.example.storage.spi.StorageStreams;
 
 import java.io.IOException;
 import java.io.InputStream;
