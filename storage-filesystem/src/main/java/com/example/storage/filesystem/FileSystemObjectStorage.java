@@ -68,7 +68,7 @@ import java.util.stream.Stream;
  *
  * <p>Chaves que o filesystem normalizaria para outro arquivo ({@code a/../b}, {@code a//b},
  * {@code a/}, segmento terminado em ponto ou espaço, que o Windows descarta) são rejeitadas. Uma
- * leitura que resolva, por symlink, para fora do root falha com {@link IllegalArgumentException}.
+ * leitura ou escrita que resolva, por symlink, para fora do root falha com {@link IllegalArgumentException}.
  * Pastas que ficam vazias depois de um {@code delete} são removidas.</p>
  *
  * <p>Sem retenção nem legal hold por objeto: {@code getRetention}, {@code setRetention},
@@ -104,7 +104,7 @@ public final class FileSystemObjectStorage implements ObjectStorage {
         Path target = resolve(key);
         String uploadId = UUID.randomUUID().toString();
         Path uploadDir = root.resolve(UPLOADS_DIR).resolve(uploadId);
-        return new FileSystemMultipartSession(target, uploadDir, key, metadata, writeLock);
+        return new FileSystemMultipartSession(this, target, uploadDir, key, metadata, writeLock);
     }
 
     @Override
@@ -161,16 +161,18 @@ public final class FileSystemObjectStorage implements ObjectStorage {
         if (!Files.isDirectory(start)) {
             return Stream.empty();
         }
+        // shortcut: as chaves são coletadas e ordenadas de uma vez (só strings); os sidecars, a parte cara,
+        // são lidos sob demanda. Trocar por travessia ordenada por pasta se a lista de chaves pesar.
         try (Stream<Path> walk = Files.walk(start)) {
             return walk.filter(Files::isRegularFile)
                     .filter(this::isDataFile)
                     .map(this::toKey)
                     .filter(key -> key.startsWith(prefix))
                     .sorted()
-                    .map(key -> summaryOf(key, root.resolve(key)))
-                    .filter(Objects::nonNull)
                     .toList()
-                    .stream();
+                    .stream()
+                    .map(key -> summaryOf(key, root.resolve(key)))
+                    .filter(Objects::nonNull);
         } catch (IOException e) {
             throw translate(e, "Falha ao listar " + prefix);
         } catch (UncheckedIOException e) {
@@ -192,10 +194,13 @@ public final class FileSystemObjectStorage implements ObjectStorage {
         if (!Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)) {
             return;   // inexistente, ou uma pasta, que não é objeto: idempotente
         }
+        // Sob o lock: sem ele, deleteEmptyParents remove a pasta que um put/copy/complete acabou de criar.
         try {
-            Files.deleteIfExists(path);
-            Files.deleteIfExists(metaPath(path));
-            deleteEmptyParents(path.getParent());
+            synchronized (writeLock) {
+                Files.deleteIfExists(path);
+                Files.deleteIfExists(metaPath(path));
+                deleteEmptyParents(path.getParent());
+            }
         } catch (IOException e) {
             throw translate(e, "Falha ao apagar " + key);
         }
@@ -212,8 +217,9 @@ public final class FileSystemObjectStorage implements ObjectStorage {
         Path temp = null;
         try {
             ObjectMetadata metadata = metadataFrom(sidecarOf(source));
-            Files.createDirectories(target.getParent());
-            temp = newTempFile(target.getParent());
+            synchronized (writeLock) {   // o temporário segura a pasta contra o deleteEmptyParents
+                temp = newTempFile(prepareParent(target));
+            }
             Files.copy(source, temp, StandardCopyOption.REPLACE_EXISTING);
             synchronized (writeLock) {
                 publish(temp, target, metadata, false);
@@ -240,6 +246,16 @@ public final class FileSystemObjectStorage implements ObjectStorage {
     }
 
     // ------------------------------------------------------------------
+
+    /** Pasta de destino de uma escrita: criada e conferida, para que um symlink não leve a escrita para fora do root. */
+    Path prepareParent(Path path) throws IOException {
+        Path parent = path.getParent();
+        Files.createDirectories(parent);
+        if (!parent.toRealPath().startsWith(root.toRealPath())) {
+            throw new IllegalArgumentException("Chave aponta para fora do root (symlink): " + root.relativize(path));
+        }
+        return parent;
+    }
 
     private Path resolve(String key) {
         SidecarFiles.requireValidKey(key);
@@ -307,11 +323,9 @@ public final class FileSystemObjectStorage implements ObjectStorage {
 
     private String writeData(Path path, InputStream data, long length, ObjectMetadata metadata,
                              boolean failIfExists) {
-        Path parent = path.getParent();
         Path temp;
         try {
-            Files.createDirectories(parent);
-            temp = newTempFile(parent);
+            temp = newTempFile(prepareParent(path));
         } catch (IOException e) {
             throw translate(e, "Falha ao preparar escrita de " + path);
         }

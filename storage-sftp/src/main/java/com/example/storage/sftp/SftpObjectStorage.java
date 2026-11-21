@@ -91,6 +91,9 @@ public final class SftpObjectStorage implements ObjectStorage {
 
     private final SftpConnection connection;
     private final String root;
+    // Serializa só a checagem de versão + publicação (put, copy, delete e o complete do multipart);
+    // o envio dos dados fica fora dele.
+    private final Object writeLock = new Object();
 
     /**
      * Sobre um {@link SSHClient} já conectado, sem reconexão e com o próprio limite de canais. Para vários
@@ -103,8 +106,9 @@ public final class SftpObjectStorage implements ObjectStorage {
     public SftpObjectStorage(SftpConnection connection, String root) {
         this.connection = Objects.requireNonNull(connection, "connection");
         Objects.requireNonNull(root, "root");
-        this.root = root.length() > 1 && root.endsWith("/") ? root.substring(0, root.length() - 1) : root;
-        if (!this.root.startsWith("/")) {
+        // "/" vira "": as chaves são root + "/" + key e a posição do prefixo em walk() é root.length() + 1
+        this.root = root.endsWith("/") ? root.substring(0, root.length() - 1) : root;
+        if (!root.startsWith("/")) {
             throw new IllegalArgumentException("root deve ser um caminho absoluto no servidor: " + root);
         }
     }
@@ -112,17 +116,7 @@ public final class SftpObjectStorage implements ObjectStorage {
     @Override
     public String put(String key, InputStream data, long length, PutOptions options) {
         String path = resolve(key);
-        // ponytail: lock único por instância; escritas em objetos diferentes esperam uma pela
-        // outra. IfNotExists não precisa dele (o rename sem OVERWRITE já é atômico no servidor);
-        // fica só por simplicidade de ter um único caminho de código.
-        synchronized (this) {
-            if (options.condition() instanceof Condition.IfVersionMatches match
-                    && !match.version().equals(currentVersion(path))) {
-                throw new PreconditionFailedException("Pré-condição " + options.condition() + " falhou em " + path, null);
-            }
-            boolean failIfExists = options.condition() instanceof Condition.IfNotExists;
-            return writeData(path, data, length, options.metadata(), failIfExists);
-        }
+        return writeData(path, data, length, options.metadata(), options.condition());
     }
 
     @Override
@@ -131,7 +125,7 @@ public final class SftpObjectStorage implements ObjectStorage {
         String target = resolve(key);
         String uploadId = UUID.randomUUID().toString();
         String uploadDir = root + "/" + UPLOADS_DIR + "/" + uploadId;
-        return new SftpMultipartSession(connection, target, uploadDir, key, uploadId, metadata);
+        return new SftpMultipartSession(connection, writeLock, target, uploadDir, key, uploadId, metadata);
     }
 
     @Override
@@ -189,7 +183,9 @@ public final class SftpObjectStorage implements ObjectStorage {
     public Stream<ObjectSummary> list(String prefix) {
         // Começa na pasta mais funda do prefixo ("a/b/c" começa em a/b), em vez de percorrer o root inteiro.
         int slash = prefix.lastIndexOf('/');
-        String start = slash < 0 ? root : resolve(prefix.substring(0, slash));
+        String start = slash < 0 ? rootDir() : resolve(prefix.substring(0, slash));
+        // shortcut: a listagem é montada inteira (um ls por pasta e um sidecar por objeto) antes de devolver o
+        // stream, porque o canal SFTP não pode ficar preso ao stream. Paginar por pasta se a árvore for enorme.
         List<ObjectSummary> items = withSftp("Falha ao listar " + prefix, sftp -> {
             List<ObjectSummary> collected = new ArrayList<>();
             try {
@@ -198,8 +194,8 @@ public final class SftpObjectStorage implements ObjectStorage {
                 if (!isNotFound(e)) {
                     throw e;
                 }
-                if (start.equals(root) || !exists(sftp, root)) {
-                    throw new StorageException("Bucket/raiz não existe: " + root, e);
+                if (start.equals(rootDir()) || !exists(sftp, rootDir())) {
+                    throw new StorageException("Bucket/raiz não existe: " + rootDir(), e);
                 }
             }
             return collected;
@@ -214,8 +210,8 @@ public final class SftpObjectStorage implements ObjectStorage {
     @Override
     public void checkAccess() {
         withSftp("Falha ao acessar " + root, sftp -> {
-            if (!isDirectory(sftp, root)) {
-                throw new StorageException("Bucket/raiz não existe: " + root, null);
+            if (!isDirectory(sftp, rootDir())) {
+                throw new StorageException("Bucket/raiz não existe: " + rootDir(), null);
             }
             return null;
         });
@@ -229,9 +225,11 @@ public final class SftpObjectStorage implements ObjectStorage {
             if (attrs == null || attrs.getType() != FileMode.Type.REGULAR) {
                 return null;   // inexistente, ou uma pasta, que não é objeto: idempotente
             }
-            deleteIfExists(sftp, path);
-            deleteIfExists(sftp, metaPath(path));
-            deleteEmptyParents(sftp, parentOf(path));
+            synchronized (writeLock) {
+                deleteIfExists(sftp, path);
+                deleteIfExists(sftp, metaPath(path));
+                deleteEmptyParents(sftp, parentOf(path));
+            }
             return null;
         });
     }
@@ -256,7 +254,9 @@ public final class SftpObjectStorage implements ObjectStorage {
             String temp = tempPath(target);
             try {
                 copyRemoteFile(sftp, source, temp);
-                publish(sftp, temp, target, metadata, false);
+                synchronized (writeLock) {
+                    publish(sftp, temp, target, metadata, false);
+                }
             } catch (IOException | RuntimeException e) {
                 rmQuietly(sftp, temp);
                 throw e;
@@ -277,28 +277,32 @@ public final class SftpObjectStorage implements ObjectStorage {
 
     // ------------------------------------------------------------------
 
+    /** O root como caminho para {@code stat}/{@code ls}: vazio (raiz "/") não é um caminho. */
+    private String rootDir() {
+        return root.isEmpty() ? "/" : root;
+    }
+
     private String resolve(String key) {
         SidecarFiles.requireValidKey(key);
         return root + "/" + key;
     }
 
     /** A versão que {@link #head} devolveria, ou {@code null} se o arquivo não existe. */
-    private String currentVersion(String path) {
-        return withSftp("Falha ao ler versão atual de " + path, sftp -> {
-            FileAttributes attrs;
-            try {
-                attrs = sftp.stat(path);
-            } catch (SFTPException e) {
-                if (isNotFound(e)) {
-                    return null;
-                }
-                throw e;
+    private static String currentVersion(SFTPClient sftp, String path) throws IOException {
+        FileAttributes attrs;
+        try {
+            attrs = sftp.stat(path);
+        } catch (SFTPException e) {
+            if (isNotFound(e)) {
+                return null;
             }
-            return versionOf(describing(loadMetadata(sftp, path), attrs), attrs);
-        });
+            throw e;
+        }
+        return versionOf(describing(loadMetadata(sftp, path), attrs), attrs);
     }
 
-    private String writeData(String path, InputStream data, long length, ObjectMetadata metadata, boolean failIfExists) {
+    private String writeData(String path, InputStream data, long length, ObjectMetadata metadata,
+                             Condition condition) {
         String temp = tempPath(path);
         return withSftp("Falha ao gravar " + path, sftp -> {
             mkdirs(sftp, parentOf(path));
@@ -313,7 +317,13 @@ public final class SftpObjectStorage implements ObjectStorage {
                     throw new StorageException("Tamanho informado (" + length + ") difere do conteúdo ("
                             + count + ") em " + path, null);
                 }
-                return publish(sftp, temp, path, metadata, failIfExists);
+                synchronized (writeLock) {
+                    if (condition instanceof Condition.IfVersionMatches match
+                            && !match.version().equals(currentVersion(sftp, path))) {
+                        throw new PreconditionFailedException("Pré-condição " + condition + " falhou em " + path, null);
+                    }
+                    return publish(sftp, temp, path, metadata, condition instanceof Condition.IfNotExists);
+                }
             } catch (IOException | RuntimeException e) {
                 rmQuietly(sftp, temp);   // inclusive quando o stream de entrada falha no meio
                 throw e;
@@ -387,7 +397,7 @@ public final class SftpObjectStorage implements ObjectStorage {
             }
             String key = entry.getPath().substring(root.length() + 1);
             if (entry.isDirectory()) {
-                if (dirPath.equals(root) && name.equals(UPLOADS_DIR)) {
+                if (dirPath.equals(rootDir()) && name.equals(UPLOADS_DIR)) {
                     continue;   // pasta reservada dos uploads multipart
                 }
                 String folder = key + "/";

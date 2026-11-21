@@ -130,6 +130,21 @@ class FileSystemOperationsTest {
     }
 
     @Test
+    void escritaPorSymlinkParaForaDoRootEhRejeitada(@TempDir Path outside) throws IOException {
+        try {
+            Files.createSymbolicLink(root.resolve("compartilhado"), outside);
+        } catch (IOException | UnsupportedOperationException e) {
+            assumeTrue(false, "sem permissão para criar symlink: " + e);
+        }
+
+        assertThrows(IllegalArgumentException.class, () -> storage.put("compartilhado/x",
+                new java.io.ByteArrayInputStream(new byte[]{1}), 1, com.example.storage.PutOptions.of("text/plain")));
+        try (var files = Files.list(outside)) {
+            assertEquals(0, files.count());
+        }
+    }
+
+    @Test
     void openDeUmaPastaEhObjetoInexistente() throws IOException {
         Files.createDirectories(root.resolve("pasta"));
 

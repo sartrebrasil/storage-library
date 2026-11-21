@@ -264,6 +264,7 @@ public final class S3ObjectStorage implements ObjectStorage {
                     new ObjectMetadata(r.contentType(), r.contentDisposition(), r.metadata())));
         } catch (SdkException e) {
             if (status(e) == 404) {
+                checkAccess();   // HEAD não tem corpo: um bucket inexistente também é 404
                 return Optional.empty();
             }
             throw translate(e, "Falha ao consultar " + uri(key));

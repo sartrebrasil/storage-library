@@ -26,9 +26,11 @@ final class FileSystemMultipartSession implements MultipartSession {
     private final String uploadId;
     private final ObjectMetadata metadata;
     private final Object writeLock;
+    private final FileSystemObjectStorage storage;
 
-    FileSystemMultipartSession(Path targetPath, Path uploadDir, String key, ObjectMetadata metadata,
-                               Object writeLock) {
+    FileSystemMultipartSession(FileSystemObjectStorage storage, Path targetPath, Path uploadDir, String key,
+                               ObjectMetadata metadata, Object writeLock) {
+        this.storage = storage;
         this.writeLock = writeLock;
         this.targetPath = targetPath;
         this.uploadDir = uploadDir;
@@ -68,14 +70,14 @@ final class FileSystemMultipartSession implements MultipartSession {
                 .toList();
         Path temp = uploadDir.resolveSibling(uploadId + "-assembled.tmp");
         try {
-            Files.createDirectories(targetPath.getParent());
             try (OutputStream out = Files.newOutputStream(temp,
                     StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING)) {
                 for (UploadedPart part : sorted) {
                     Files.copy(partPath(part.partNumber()), out);
                 }
             }
-            synchronized (writeLock) {
+            synchronized (writeLock) {   // pasta criada sob o lock: o delete não a poda antes do publish
+                storage.prepareParent(targetPath);
                 FileSystemObjectStorage.publish(temp, targetPath, metadata, false);
             }
         } catch (IOException e) {

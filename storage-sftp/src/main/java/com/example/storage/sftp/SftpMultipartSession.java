@@ -28,15 +28,17 @@ import java.util.Set;
 final class SftpMultipartSession implements MultipartSession {
 
     private final SftpConnection connection;
+    private final Object writeLock;
     private final String targetPath;
     private final String uploadDir;
     private final String key;
     private final String uploadId;
     private final ObjectMetadata metadata;
 
-    SftpMultipartSession(SftpConnection connection, String targetPath, String uploadDir, String key,
+    SftpMultipartSession(SftpConnection connection, Object writeLock, String targetPath, String uploadDir, String key,
                          String uploadId, ObjectMetadata metadata) {
         this.connection = connection;
+        this.writeLock = writeLock;
         this.targetPath = targetPath;
         this.uploadDir = uploadDir;
         this.key = key;
@@ -93,7 +95,9 @@ final class SftpMultipartSession implements MultipartSession {
                     }
                 }
             }
-            SftpObjectStorage.publish(sftp, temp, targetPath, metadata, false);
+            synchronized (writeLock) {
+                SftpObjectStorage.publish(sftp, temp, targetPath, metadata, false);
+            }
         } catch (IOException e) {
             deleteQuietly(temp);
             // As partes ficam: o complete pode ser repetido, e o abort as apaga.
