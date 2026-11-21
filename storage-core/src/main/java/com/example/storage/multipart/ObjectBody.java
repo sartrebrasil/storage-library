@@ -1,4 +1,4 @@
-package com.example.storage;
+package com.example.storage.multipart;
 
 import java.io.IOException;
 import java.io.OutputStream;

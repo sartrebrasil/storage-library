@@ -2,11 +2,11 @@ package com.example.storage.filesystem;
 
 import com.example.storage.ObjectInfo;
 import com.example.storage.ObjectMetadata;
-import com.example.storage.ObjectNotFoundException;
+import com.example.storage.exception.ObjectNotFoundException;
 import com.example.storage.ObjectStorage;
-import com.example.storage.PreconditionFailedException;
+import com.example.storage.exception.PreconditionFailedException;
 import com.example.storage.PutOptions;
-import com.example.storage.StorageException;
+import com.example.storage.exception.StorageException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -127,6 +127,21 @@ class FileSystemOperationsTest {
 
         assertThrows(IllegalArgumentException.class, () -> storage.open("link.txt"));
         assertThrows(IllegalArgumentException.class, () -> storage.head("link.txt"));
+    }
+
+    @Test
+    void escritaPorSymlinkParaForaDoRootEhRejeitada(@TempDir Path outside) throws IOException {
+        try {
+            Files.createSymbolicLink(root.resolve("compartilhado"), outside);
+        } catch (IOException | UnsupportedOperationException e) {
+            assumeTrue(false, "sem permissão para criar symlink: " + e);
+        }
+
+        assertThrows(IllegalArgumentException.class, () -> storage.put("compartilhado/x",
+                new java.io.ByteArrayInputStream(new byte[]{1}), 1, com.example.storage.PutOptions.of("text/plain")));
+        try (var files = Files.list(outside)) {
+            assertEquals(0, files.count());
+        }
     }
 
     @Test

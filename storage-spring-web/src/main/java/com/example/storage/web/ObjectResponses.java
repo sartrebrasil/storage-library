@@ -4,7 +4,7 @@ import com.example.storage.ByteRange;
 import com.example.storage.ObjectContent;
 import com.example.storage.ObjectInfo;
 import com.example.storage.ObjectStorage;
-import com.example.storage.RangeNotSatisfiableException;
+import com.example.storage.exception.RangeNotSatisfiableException;
 import org.springframework.core.io.InputStreamResource;
 import org.springframework.core.io.Resource;
 import org.springframework.http.ContentDisposition;

@@ -1,7 +1,9 @@
-package com.example.storage;
+package com.example.storage.multipart;
 
 import java.io.IOException;
 import java.util.List;
+import com.example.storage.MultipartSession;
+import com.example.storage.UploadedPart;
 
 /**
  * Como as partes de um {@link MultipartOutputStream} chegam ao storage: na thread que escreve

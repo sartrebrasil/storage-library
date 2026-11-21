@@ -1,7 +1,9 @@
-package com.example.storage;
+package com.example.storage.multipart;
 
 import java.util.ArrayList;
 import java.util.List;
+import com.example.storage.MultipartSession;
+import com.example.storage.UploadedPart;
 
 /** Um único buffer, reaproveitado parte a parte; cada parte sobe na thread que escreve. */
 final class SequentialPartUploader implements PartUploader {

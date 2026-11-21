@@ -1,19 +1,19 @@
 package com.example.storage.spring;
 
-import com.example.storage.AccessDeniedException;
+import com.example.storage.exception.AccessDeniedException;
 import com.example.storage.ByteRange;
 import com.example.storage.DeleteResult;
-import com.example.storage.MultipartConfig;
+import com.example.storage.multipart.MultipartConfig;
 import com.example.storage.MultipartSession;
 import com.example.storage.ObjectMetadata;
-import com.example.storage.ObjectRetainedException;
+import com.example.storage.exception.ObjectRetainedException;
 import com.example.storage.ObjectStorage;
-import com.example.storage.ObjectTooLargeException;
-import com.example.storage.PreconditionFailedException;
+import com.example.storage.exception.ObjectTooLargeException;
+import com.example.storage.exception.PreconditionFailedException;
 import com.example.storage.PutOptions;
-import com.example.storage.RangeNotSatisfiableException;
+import com.example.storage.exception.RangeNotSatisfiableException;
 import com.example.storage.Retention;
-import com.example.storage.StorageException;
+import com.example.storage.exception.StorageException;
 import com.example.storage.UploadedPart;
 import com.example.storage.memory.InMemoryObjectStorage;
 import io.micrometer.core.instrument.Meter;

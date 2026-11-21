@@ -1,4 +1,4 @@
-package com.example.storage;
+package com.example.storage.spi;
 
 import java.io.FilterInputStream;
 import java.io.IOException;
@@ -9,6 +9,9 @@ import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.stream.Stream;
 import java.util.stream.StreamSupport;
+import com.example.storage.ListEntry;
+import com.example.storage.ObjectStorage;
+import com.example.storage.exception.StorageException;
 
 /** Utilitários para adapters: listagens paginadas como {@link Stream} e leitura limitada a uma faixa. */
 public final class StorageStreams {

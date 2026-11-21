@@ -1,6 +1,6 @@
 package com.example.storage.sftp;
 
-import com.example.storage.StorageException;
+import com.example.storage.exception.StorageException;
 import net.schmizz.sshj.SSHClient;
 import net.schmizz.sshj.sftp.SFTPClient;
 

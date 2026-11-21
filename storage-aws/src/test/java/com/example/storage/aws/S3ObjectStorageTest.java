@@ -1,13 +1,13 @@
 package com.example.storage.aws;
 
-import com.example.storage.AccessDeniedException;
+import com.example.storage.exception.AccessDeniedException;
 import com.example.storage.ByteRange;
 import com.example.storage.MultipartSession;
 import com.example.storage.ObjectMetadata;
-import com.example.storage.ObjectNotFoundException;
-import com.example.storage.PreconditionFailedException;
+import com.example.storage.exception.ObjectNotFoundException;
+import com.example.storage.exception.PreconditionFailedException;
 import com.example.storage.PutOptions;
-import com.example.storage.StorageException;
+import com.example.storage.exception.StorageException;
 import com.example.storage.UploadedPart;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;

@@ -3,7 +3,7 @@ package com.example.storage.memory;
 import com.example.storage.MultipartSession;
 import com.example.storage.ObjectMetadata;
 import com.example.storage.PutOptions;
-import com.example.storage.StorageException;
+import com.example.storage.exception.StorageException;
 import com.example.storage.UploadedPart;
 import org.junit.jupiter.api.Test;
 

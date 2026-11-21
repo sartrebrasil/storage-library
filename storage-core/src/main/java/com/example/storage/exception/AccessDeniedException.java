@@ -1,4 +1,4 @@
-package com.example.storage;
+package com.example.storage.exception;
 
 /** Credencial ausente, inválida ou sem permissão para a operação. */
 public class AccessDeniedException extends StorageException {

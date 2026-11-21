@@ -1,26 +1,26 @@
 package com.example.storage.aws;
 
-import com.example.storage.AccessDeniedException;
+import com.example.storage.exception.AccessDeniedException;
 import com.example.storage.ByteRange;
 import com.example.storage.CommonPrefix;
 import com.example.storage.ListEntry;
-import com.example.storage.StorageStreams;
+import com.example.storage.spi.StorageStreams;
 import com.example.storage.Condition;
 import com.example.storage.DeleteResult;
-import com.example.storage.MultipartOutputStream;
+import com.example.storage.multipart.MultipartOutputStream;
 import com.example.storage.MultipartSession;
 import com.example.storage.ObjectInfo;
 import com.example.storage.ObjectContent;
 import com.example.storage.ObjectMetadata;
-import com.example.storage.ObjectNotFoundException;
-import com.example.storage.ObjectRetainedException;
+import com.example.storage.exception.ObjectNotFoundException;
+import com.example.storage.exception.ObjectRetainedException;
 import com.example.storage.ObjectStorage;
 import com.example.storage.ObjectSummary;
-import com.example.storage.PreconditionFailedException;
-import com.example.storage.PresignedRequest;
+import com.example.storage.exception.PreconditionFailedException;
+import com.example.storage.presign.PresignedRequest;
 import com.example.storage.PutOptions;
 import com.example.storage.Retention;
-import com.example.storage.StorageException;
+import com.example.storage.exception.StorageException;
 import software.amazon.awssdk.core.ResponseInputStream;
 import software.amazon.awssdk.core.exception.SdkException;
 import software.amazon.awssdk.core.sync.RequestBody;
@@ -264,6 +264,7 @@ public final class S3ObjectStorage implements ObjectStorage {
                     new ObjectMetadata(r.contentType(), r.contentDisposition(), r.metadata())));
         } catch (SdkException e) {
             if (status(e) == 404) {
+                checkAccess();   // HEAD não tem corpo: um bucket inexistente também é 404
                 return Optional.empty();
             }
             throw translate(e, "Falha ao consultar " + uri(key));
@@ -377,7 +378,7 @@ public final class S3ObjectStorage implements ObjectStorage {
 
     @Override
     public void copy(String sourceKey, String targetKey) {
-        ObjectInfo source = head(sourceKey).orElseThrow(() -> new com.example.storage.ObjectNotFoundException(
+        ObjectInfo source = head(sourceKey).orElseThrow(() -> new com.example.storage.exception.ObjectNotFoundException(
                 "Origem da cópia não existe: " + uri(sourceKey), null));
         try {
             if (source.size() <= maxSingleCopy) {

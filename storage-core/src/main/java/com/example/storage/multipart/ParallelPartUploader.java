@@ -1,4 +1,4 @@
-package com.example.storage;
+package com.example.storage.multipart;
 
 import java.io.IOException;
 import java.io.InterruptedIOException;
@@ -11,6 +11,9 @@ import java.util.concurrent.CompletionException;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicReference;
+import com.example.storage.MultipartSession;
+import com.example.storage.UploadedPart;
+import com.example.storage.exception.StorageException;
 
 /**
  * Até {@code maxInFlight} partes subindo no executor enquanto o stream escreve em outro buffer.

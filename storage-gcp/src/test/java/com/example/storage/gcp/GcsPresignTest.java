@@ -1,9 +1,9 @@
 package com.example.storage.gcp;
 
 import com.example.storage.ObjectMetadata;
-import com.example.storage.PresignedRequest;
+import com.example.storage.presign.PresignedRequest;
 import com.example.storage.PutOptions;
-import com.example.storage.StorageException;
+import com.example.storage.exception.StorageException;
 import com.google.auth.ServiceAccountSigner;
 import com.google.auth.oauth2.ServiceAccountCredentials;
 import com.google.cloud.storage.MultipartUploadClient;

@@ -8,7 +8,7 @@ import com.azure.storage.blob.models.UserDelegationKey;
 import com.azure.storage.blob.sas.BlobServiceSasSignatureValues;
 import com.azure.storage.common.StorageSharedKeyCredential;
 import com.example.storage.ObjectMetadata;
-import com.example.storage.PresignedRequest;
+import com.example.storage.presign.PresignedRequest;
 import com.example.storage.PutOptions;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;

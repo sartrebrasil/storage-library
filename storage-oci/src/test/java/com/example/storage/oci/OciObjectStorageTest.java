@@ -1,9 +1,9 @@
 package com.example.storage.oci;
 
-import com.example.storage.AccessDeniedException;
+import com.example.storage.exception.AccessDeniedException;
 import com.example.storage.MultipartSession;
 import com.example.storage.ObjectMetadata;
-import com.example.storage.StorageException;
+import com.example.storage.exception.StorageException;
 import com.example.storage.UploadedPart;
 import com.oracle.bmc.model.BmcException;
 import com.oracle.bmc.objectstorage.model.CommitMultipartUploadPartDetails;

@@ -1,16 +1,16 @@
 package com.example.storage.gcp;
 
-import com.example.storage.AccessDeniedException;
+import com.example.storage.exception.AccessDeniedException;
 import com.example.storage.ByteRange;
 import com.example.storage.ListEntry;
 import com.example.storage.ObjectContent;
 import com.example.storage.ObjectInfo;
 import com.example.storage.ObjectMetadata;
-import com.example.storage.ObjectNotFoundException;
+import com.example.storage.exception.ObjectNotFoundException;
 import com.example.storage.ObjectSummary;
-import com.example.storage.PreconditionFailedException;
+import com.example.storage.exception.PreconditionFailedException;
 import com.example.storage.PutOptions;
-import com.example.storage.RangeNotSatisfiableException;
+import com.example.storage.exception.RangeNotSatisfiableException;
 import com.google.api.gax.paging.Page;
 import com.google.cloud.BatchResult;
 import com.google.cloud.ReadChannel;
@@ -93,9 +93,9 @@ class GcsOperationsTest {
                     return blob("k", 1);
                 });
 
-        assertThrows(com.example.storage.StorageException.class,
+        assertThrows(com.example.storage.exception.StorageException.class,
                 () -> storage.put("k", new ByteArrayInputStream(new byte[3]), 5, PutOptions.of("text/plain")));
-        assertThrows(com.example.storage.StorageException.class,
+        assertThrows(com.example.storage.exception.StorageException.class,
                 () -> storage.put("k", new ByteArrayInputStream(new byte[8]), 5, PutOptions.of("text/plain")));
     }
 
@@ -172,7 +172,7 @@ class GcsOperationsTest {
     void checkAccessFalhaComBucketInexistente() {
         when(client.list(eq("bucket"), any(Storage.BlobListOption[].class))).thenThrow(new StorageException(404, "not found"));
 
-        com.example.storage.StorageException e = assertThrows(com.example.storage.StorageException.class, storage::checkAccess);
+        com.example.storage.exception.StorageException e = assertThrows(com.example.storage.exception.StorageException.class, storage::checkAccess);
         assertFalse(e instanceof ObjectNotFoundException);
         assertTrue(e.getMessage().contains("não existe"), e.getMessage());
     }
@@ -236,7 +236,7 @@ class GcsOperationsTest {
 
         var entries = storage.listDirectory("p/");
 
-        assertThrows(com.example.storage.StorageException.class, entries::toList);
+        assertThrows(com.example.storage.exception.StorageException.class, entries::toList);
     }
 
     @Test

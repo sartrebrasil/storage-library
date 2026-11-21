@@ -11,6 +11,13 @@ import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
+import com.example.storage.exception.AccessDeniedException;
+import com.example.storage.exception.ObjectNotFoundException;
+import com.example.storage.exception.PreconditionFailedException;
+import com.example.storage.exception.RangeNotSatisfiableException;
+import com.example.storage.exception.StorageException;
+import com.example.storage.presign.PresignTtl;
+import com.example.storage.spi.SidecarFiles;
 
 class CoreModelTest {
 
@@ -92,6 +99,8 @@ class CoreModelTest {
         assertEquals(ByteRange.of(5, 95), ByteRange.parseHttp("bytes=5-9223372036854775807").resolve(100));
         assertEquals(ByteRange.of(1, 99), ByteRange.of(1, Long.MAX_VALUE).resolve(100));
         assertEquals("bytes=1-9223372036854775806", ByteRange.of(1, Long.MAX_VALUE).httpValue());
+        // start 0 + end Long.MAX_VALUE: end - start + 1 estoura Long e virava IllegalArgumentException
+        assertEquals(ByteRange.all(), ByteRange.parseHttp("bytes=0-9223372036854775807").resolve(100));
     }
 
     @Test

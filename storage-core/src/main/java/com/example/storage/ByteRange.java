@@ -1,6 +1,7 @@
 package com.example.storage;
 
 import java.util.Objects;
+import com.example.storage.exception.RangeNotSatisfiableException;
 
 /**
  * Faixa de bytes para leitura parcial.
@@ -92,7 +93,8 @@ public record ByteRange(long offset, long length) {
         if (end < start) {
             throw new IllegalArgumentException("Range com fim antes do início: " + header);
         }
-        return of(start, end - start + 1);
+        long length = end - start + 1;
+        return length <= 0 ? from(start) : of(start, length);   // <= 0: end - start + 1 estourou Long
     }
 
     /**

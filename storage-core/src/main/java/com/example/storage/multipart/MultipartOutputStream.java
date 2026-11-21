@@ -1,10 +1,16 @@
-package com.example.storage;
+package com.example.storage.multipart;
 
 import java.io.IOException;
 import java.io.OutputStream;
 import java.security.MessageDigest;
 import java.util.HexFormat;
 import java.util.Objects;
+import com.example.storage.MultipartSession;
+import com.example.storage.ObjectMetadata;
+import com.example.storage.ObjectStorage;
+import com.example.storage.exception.AccessDeniedException;
+import com.example.storage.exception.ObjectTooLargeException;
+import com.example.storage.exception.StorageException;
 
 /**
  * OutputStream que transforma escrita sequencial em upload multipart.
